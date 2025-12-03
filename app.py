@@ -127,12 +127,32 @@ def fetch_macro_series(series_id: str, name: str) -> pd.DataFrame:
     return df
 
 
-def _fallback_macro_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Use bundled CSVs as an offline fallback (UK only)."""
-    cpi = _load_from_csv("cpi_uk.csv", "CPI")
-    unemp = _load_from_csv("unemployment_uk.csv", "Unemployment")
-    base_rate = _load_from_csv("base_rate_uk.csv", "BaseRate")
+def _fallback_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Offline / local CSV fallback for macro data.
+
+    Expects CSVs with columns: Date, Value in data/macro.
+    """
+    if country == "United Kingdom":
+        cpi = _load_from_csv("cpi_uk.csv", "CPI")
+        unemp = _load_from_csv("unemployment_uk.csv", "Unemployment")
+        base_rate = _load_from_csv("base_rate_uk.csv", "BaseRate")
+    elif country == "United States":
+        cpi = _load_from_csv("cpi_us.csv", "CPI")
+        unemp = _load_from_csv("unemployment_us.csv", "Unemployment")
+        base_rate = _load_from_csv("base_rate_us.csv", "BaseRate")
+    elif country == "Euro Area":
+        cpi = _load_from_csv("cpi_ea.csv", "CPI")
+        unemp = _load_from_csv("unemployment_ea.csv", "Unemployment")
+        base_rate = _load_from_csv("base_rate_ea.csv", "BaseRate")
+    else:
+        # Default to UK if something unexpected slips through
+        cpi = _load_from_csv("cpi_uk.csv", "CPI")
+        unemp = _load_from_csv("unemployment_uk.csv", "Unemployment")
+        base_rate = _load_from_csv("base_rate_uk.csv", "BaseRate")
+
     return cpi, unemp, base_rate
+
 
 
 @st.cache_data
@@ -140,19 +160,21 @@ def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     """
     Load CPI, unemployment and policy rate series for a country.
 
-    - UK always uses the bundled CSVs.
-    - Other countries try live FRED; if that fails, we fall back to UK CSV
-      but clearly label that this is a fallback.
+    - First choice: live FRED (for US/UK/Euro if available).
+    - Fallback: local CSVs per country in data/macro.
 
     Returns (cpi_df, unemployment_df, rate_df, source_label).
     """
 
-    # UK: always use local CSV files
-    if country == "United Kingdom":
-        cpi, unemp, base_rate = _fallback_macro_data()
-        return cpi, unemp, base_rate, "Local CSV (UK)"
+    # Always have a local fallback available
+    # (this will raise if the CSVs are missing or malformed)
+    try:
+        local_cpi, local_unemp, local_rate = _fallback_macro_data(country)
+    except Exception as e:
+        # If even the local files fail, propagate the error
+        raise RuntimeError(f"Local CSV fallback failed for {country}: {e}")
 
-    # Other countries: try FRED
+    # Try live FRED where configured
     if country in MACRO_SERIES:
         series_map = MACRO_SERIES[country]
         try:
@@ -161,13 +183,11 @@ def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
             base_rate = fetch_macro_series(series_map["rate"], "BaseRate")
             return cpi, unemp, base_rate, "Live FRED"
         except Exception:
-            # FRED failed — use UK fallback but label clearly
-            cpi, unemp, base_rate = _fallback_macro_data()
-            return cpi, unemp, base_rate, f"UK CSV fallback used for {country}"
+            # FRED failed – fall back to local CSV for that country
+            return local_cpi, local_unemp, local_rate, f"Local CSV fallback ({country})"
 
-    # Absolute fallback
-    cpi, unemp, base_rate = _fallback_macro_data()
-    return cpi, unemp, base_rate, "Local CSV (UK)"
+    # If country not in MACRO_SERIES, just use local CSV
+    return local_cpi, local_unemp, local_rate, f"Local CSV ({country})"
 
 
 
@@ -530,18 +550,19 @@ extra_tickers = st.sidebar.text_input(
 )
 
 # Load macro
+# Load macro
 try:
     cpi_raw, unemp_raw, rate_raw, source_label = load_macro_data(country)
     cpi, unemp = add_macro_features(cpi_raw, unemp_raw)
     macro_state = infer_macro_state(cpi, unemp, rate_raw)
-    summary_country = country if "Live" in source_label else "United Kingdom (fallback)"
-    macro_summary = macro_summary_text(cpi, unemp, rate_raw, summary_country, source_label)
+    macro_summary = macro_summary_text(cpi, unemp, rate_raw, country, source_label)
 except Exception as e:
     st.error(f"Error loading macro data: {e}")
     st.stop()
 
 # Macro overview at top
 st.subheader("Macro overview")
+st.markdown(f"**Data source:** {source_label}")
 st.markdown(macro_summary)
 
 macro_cols = st.columns(3)
