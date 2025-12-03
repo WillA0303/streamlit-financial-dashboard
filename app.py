@@ -1,9 +1,10 @@
-  ##############################################
+##############################################
 # app.py – Macro–Equity Dashboard (Streamlit)
 ##############################################
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import Mapping
 import io
 import math
 
@@ -70,6 +71,16 @@ def _to_float(x: Any) -> float:
         return float(x)
     except (TypeError, ValueError):
         return math.nan
+
+
+def _format_metric_value(value: Any, fmt: str, placeholder: str = "N/A") -> str:
+    try:
+        fval = float(value)
+        if math.isnan(fval):
+            return placeholder
+        return fmt.format(fval)
+    except Exception:
+        return placeholder
 
 
 def _find_row_label(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
@@ -248,7 +259,6 @@ def macro_summary_text(
     country: str,
     source: str,
 ) -> str:
-    # Basic validation
     for df in (cpi_df, unemp_df, rate_df):
         if df is None or df.empty:
             raise ValueError("Macro data is empty; cannot build summary")
@@ -260,30 +270,16 @@ def macro_summary_text(
             return series.iloc[-1], series.iloc[-1]
         return math.nan, math.nan
 
-    # Use a common monthly index based on CPI and unemployment
-    latest_idx = min(cpi_df.index[-1], unemp_df.index[-1])
+    latest_idx = min(cpi_df.index[-1], unemp_df.index[-1], rate_df.index[-1])
     latest_date = latest_idx.date()
 
-    # CPI (truncate to dates <= latest_idx)
-    cpi_series = cpi_df["CPI"].loc[:latest_idx]
-    latest_cpi, prev_cpi = latest_and_previous(cpi_series)
+    latest_cpi, prev_cpi = latest_and_previous(cpi_df["CPI"])
     latest_cpi_yoy = cpi_df["CPI_YoY"].loc[latest_idx]
 
-    # Unemployment (truncate to dates <= latest_idx)
-    unemp_series = unemp_df["Unemployment"].loc[:latest_idx]
-    latest_unemp, prev_unemp = latest_and_previous(unemp_series)
+    latest_unemp, prev_unemp = latest_and_previous(unemp_df["Unemployment"])
     latest_unemp_yoy = unemp_df["Unemployment_YoY"].loc[latest_idx]
 
-    # Policy rate: use last two observations up to latest_idx
-    rate_series = rate_df["BaseRate"].loc[:latest_idx]
-    if len(rate_series) >= 2:
-        latest_rate = rate_series.iloc[-1]
-        prev_rate = rate_series.iloc[-2]
-    elif len(rate_series) == 1:
-        latest_rate = rate_series.iloc[-1]
-        prev_rate = latest_rate
-    else:
-        raise ValueError("No rate data available up to latest CPI/unemployment date")
+    latest_rate, prev_rate = latest_and_previous(rate_df["BaseRate"])
     rate_change = latest_rate - prev_rate
 
     def direction(latest: float, previous: float) -> str:
@@ -311,30 +307,6 @@ def macro_summary_text(
     return summary
 
 
-    def direction(latest: float, previous: float) -> str:
-        if latest > previous:
-            return "rising"
-        elif latest < previous:
-            return "falling"
-        else:
-            return "unchanged"
-
-    cpi_dir = direction(latest_cpi, prev_cpi)
-    unemp_dir = direction(latest_unemp, prev_unemp)
-    rate_dir = direction(latest_rate, prev_rate)
-
-    inflation_regime = classify_inflation(latest_cpi_yoy)
-    unemployment_regime = classify_unemployment(latest_unemp)
-
-    summary = f"""
-**{country} Macro Summary** (sample ending {latest_date} – {source})
-
-- CPI level: {latest_cpi:.2f} | YoY: {latest_cpi_yoy:.2f}% | Direction: {cpi_dir} | Regime: {inflation_regime}
-- Unemployment: {latest_unemp:.2f}% | YoY: {latest_unemp_yoy:.2f}% | Direction: {unemp_dir} | Regime: {unemployment_regime}
-- Policy rate: {latest_rate:.2f}% | Change vs last: {rate_change:+.2f} | Direction: {rate_dir}
-"""
-    return summary
-
 
 
 def infer_macro_state(
@@ -345,22 +317,17 @@ def infer_macro_state(
     if cpi_df.empty or unemp_df.empty or rate_df.empty:
         raise ValueError("Macro data missing for regime inference")
 
-    # Work off the common monthly index
-    latest_idx = min(cpi_df.index[-1], unemp_df.index[-1])
+    latest_idx = min(cpi_df.index[-1], unemp_df.index[-1], rate_df.index[-1])
 
     latest_cpi_yoy = cpi_df.loc[latest_idx, "CPI_YoY"]
     latest_unemp = unemp_df.loc[latest_idx, "Unemployment"]
 
-    # Policy rate: align to latest_idx using last two observations up to that date
-    rate_series = rate_df["BaseRate"].loc[:latest_idx]
-    if len(rate_series) >= 2:
-        latest_rate = rate_series.iloc[-1]
-        prev_rate = rate_series.iloc[-2]
-    elif len(rate_series) == 1:
-        latest_rate = rate_series.iloc[-1]
-        prev_rate = latest_rate
+    if len(rate_df) >= 2:
+        latest_rate = rate_df["BaseRate"].iloc[-1]
+        prev_rate = rate_df["BaseRate"].iloc[-2]
     else:
-        raise ValueError("No rate data available up to latest CPI/unemployment date")
+        latest_rate = rate_df["BaseRate"].iloc[-1]
+        prev_rate = latest_rate
 
     if latest_rate > prev_rate:
         rate_direction = "rising"
@@ -373,53 +340,85 @@ def infer_macro_state(
         "inflation_yoy": latest_cpi_yoy,
         "unemployment": latest_unemp,
         "rate_level": latest_rate,
-        "prev_rate": prev_rate,
         "rate_direction": rate_direction,
         "inflation_regime": classify_inflation(latest_cpi_yoy),
         "unemployment_regime": classify_unemployment(latest_unemp),
     }
 
 
-
-
 # -----------------------
 # Company financials via yfinance
 # -----------------------
+
+def _load_ticker_info(tk: yf.Ticker) -> Dict[str, Any]:
+    """Best-effort info fetch that tolerates yfinance quirks."""
+
+    def _normalize(candidate: Any) -> Dict[str, Any]:
+        if isinstance(candidate, dict):
+            return candidate
+        if isinstance(candidate, Mapping):
+            return dict(candidate)
+        try:
+            return dict(candidate)
+        except Exception:
+            return {}
+
+    def _candidate_info() -> Dict[str, Any]:
+        try:
+            return _normalize(tk.info)
+        except Exception:
+            return {}
+
+    def _candidate_get_info() -> Dict[str, Any]:
+        try:
+            return _normalize(tk.get_info())
+        except Exception:
+            return {}
+
+    def _candidate_fast_info() -> Dict[str, Any]:
+        try:
+            return _normalize(tk.fast_info)
+        except Exception:
+            return {}
+
+    def _candidate_get_fast_info() -> Dict[str, Any]:
+        try:
+            return _normalize(tk.get_fast_info())
+        except Exception:
+            return {}
+
+    for getter in (
+        _candidate_info,
+        _candidate_get_info,
+        _candidate_fast_info,
+        _candidate_get_fast_info,
+    ):
+        info = getter()
+        if info:
+            return info
+
+    return {}
+
 
 @st.cache_data
 def load_company_financials(ticker: str) -> Dict[str, Any]:
     tk = yf.Ticker(ticker)
 
-    # ... your existing income / balance / cashflow logic ...
+    # Financial statements (annual)
+    income = tk.financials
+    balance = tk.balance_sheet
+    cashflow = tk.cashflow
 
-    # Company info / metadata
-    try:
-        info = tk.info
-    except Exception:
-        info = {}
-    if not info:
-        try:
-            info = tk.get_info()
-        except Exception:
-            info = {}
-
-    # Try fast_info as a separate dict (may or may not be populated)
-    try:
-        fast_info = tk.fast_info
-        if fast_info is None:
-            fast_info = {}
-    except Exception:
-        fast_info = {}
+    # Info
+    info = _load_ticker_info(tk)
 
     return {
         "ticker": ticker,
         "info": info,
-        "fast_info": fast_info,
         "income": income,
         "balance": balance,
         "cashflow": cashflow,
     }
-
 
 
 def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
@@ -580,9 +579,9 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
             }
         )
 
-    df = pd.DataFrame(rows).set_index("Year").sort_index()
-    return df
+    df = pd.DataFrame(rows).set_index("Year")
 
+    return df
 
 
 def equity_snapshot_text(ticker: str, fin_kpis: pd.DataFrame) -> str:
@@ -606,7 +605,7 @@ def equity_snapshot_text(ticker: str, fin_kpis: pd.DataFrame) -> str:
 
 - Revenue: {rev:,.0f}
 - Net income: {ni:,.0f}
-- Net margin: {net_margin:.2f}% 
+- Net margin: {net_margin:.2f}%
 - ROE: {roe:.2f}%
 - Debt to equity: {d_to_e:.2f}
 - Cash conversion (OCF / NI): {cash_conv:.2f}%
@@ -635,6 +634,7 @@ def combined_view_text(ticker: str, fin_kpis: pd.DataFrame, macro_state: Dict[st
 This is not a forecast, but a way to frame whether the current equity performance is happening in an easy or a tough macro environment.
 """
     return text
+
 
 def valuation_from_info(info: Dict[str, Any], latest_revenue: float) -> Dict[str, float]:
     market_cap = _to_float(info.get("marketCap"))
@@ -705,37 +705,34 @@ def quick_dcf_value(
 
 
 def price_vs_macro(ticker: str, cpi_df: pd.DataFrame) -> pd.DataFrame:
-    # Download up to 10 years of daily prices
-    price_hist = yf.download(ticker, period="10y", progress=False)
-    if price_hist is None or len(price_hist) == 0:
+    try:
+        price_hist = yf.download(ticker, period="10y", progress=False)
+    except Exception:
         return pd.DataFrame()
 
-    # Robust selection of a usable price series
-    if isinstance(price_hist, pd.DataFrame):
-        if "Adj Close" in price_hist.columns:
-            prices = price_hist["Adj Close"]
-        elif "Close" in price_hist.columns:
-            prices = price_hist["Close"]
-        else:
-            return pd.DataFrame()  # no usable price column
-    else:
-        # If a Series is returned for some reason, just use it directly
-        prices = price_hist
+    if price_hist is None or price_hist.empty:
+        return pd.DataFrame()
 
-    # 12-month rolling price return in percent
+    prices = price_hist.get("Adj Close")
+    if prices is None or prices.empty:
+        return pd.DataFrame()
+
     rolling_return = prices.pct_change(252) * 100
+    rolling_return.name = "PriceReturn12M"
 
-    # Align CPI YoY with business days
-    cpi_yoy = cpi_df[["CPI_YoY"]].resample("B").ffill()
+    cpi_resampled = cpi_df.copy()
+    if "CPI_YoY" not in cpi_resampled.columns and "CPI" in cpi_resampled.columns:
+        cpi_resampled["CPI_YoY"] = cpi_resampled["CPI"].pct_change(periods=12) * 100
 
-    combined = pd.concat(
-        [rolling_return.rename("PriceReturn12M"), cpi_yoy["CPI_YoY"]],
-        axis=1,
-    ).dropna()
+    try:
+        cpi_resampled.index = pd.to_datetime(cpi_resampled.index)
+        cpi_resampled = cpi_resampled[["CPI_YoY"]].resample("B").ffill()
+    except Exception:
+        return pd.DataFrame()
+
+    combined = pd.concat([rolling_return, cpi_resampled["CPI_YoY"]], axis=1).dropna()
 
     return combined
-
-
 
 
 def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
@@ -763,12 +760,10 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
 
             # Robust info lookup for Sector / Country / Name
             info = fin.get("info") or {}
-            st.write("Info keys:", list(info.keys()))
-
             if not info:
                 # Fallback: query yfinance again specifically for metadata
                 try:
-                    info = yf.Ticker(t_clean).get_info()
+                    info = _load_ticker_info(yf.Ticker(t_clean))
                 except Exception:
                     info = {}
 
@@ -777,7 +772,7 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
             country = info.get("country") or info.get("countryISO") or ""
 
             valuation = valuation_from_info(info, latest.get("Revenue", math.nan))
-            
+
             row = {
                 "Ticker": t_clean,
                 "Name": name,
@@ -859,6 +854,7 @@ def apply_horizon(df: pd.DataFrame, horizon_key: str) -> pd.DataFrame:
             return df
     return df
 
+
 st.set_page_config(
     page_title="Macro–Equity Dashboard",
     layout="wide",
@@ -872,43 +868,6 @@ country = st.sidebar.selectbox("Macro country", list(MACRO_SERIES.keys()), index
 horizon = st.sidebar.selectbox(
     "Macro horizon", list(CONFIG["macro_horizons"].keys()), index=1
 )
-with st.sidebar.expander("About this dashboard"):
-    st.markdown(
-        """
-This app combines macroeconomic indicators with live equity fundamentals to create 
-a simple, always-updated environment for evaluating companies in their current macro context.
-
-**Macro tab**
-- CPI, unemployment, and policy rates for the US, UK, and Euro Area  
-- Year-on-year inflation and unemployment dynamics  
-- Automatic regime classification (low/moderate/elevated inflation; low/normal/high unemployment)  
-- Horizon filter for short-term vs long-term views  
-- Downloadable CSV output
-
-**Single company tab**
-- yfinance financial statements (income, balance sheet, cash flow)  
-- Automatic calculation of KPIs (margins, ROE, leverage, cash conversion, capex intensity)  
-- Simple scenario-based DCF using growth, margin, and cost of equity sliders  
-- Macro-aware interpretation of the company’s latest fundamentals  
-- Price vs inflation chart over the last decade
-
-**Portfolio tab**
-- Multi-ticker fundamentals table for comparison  
-- Aggregated KPIs for a watchlist  
-- Quick visual comparisons across revenue, ROE, margins, and leverage  
-- CSV download for further analysis
-
-**Data sources**
-- FRED (US macro), ONS (UK inflation & unemployment), Bank of England (Bank Rate)  
-- yfinance (equity fundamentals)  
-- Local CSV data for extended UK history
-
-**Purpose**
-This dashboard is designed as a practical, lightweight research tool and a demonstration
-of how macro and company-level data can be combined in a single analytical interface.
-It is informative rather than predictive.
-"""
-    )
 
 try:
     cpi_raw, unemp_raw, rate_raw, source_label = load_macro_data(country)
@@ -929,6 +888,7 @@ macro_regime_label = (
     f"{macro_state['unemployment_regime']} unemployment, "
     f"{macro_state['rate_direction']} rates"
 )
+
 tab_macro, tab_single, tab_portfolio = st.tabs(
     ["Macro overview", "Single company", "Portfolio"]
 )
@@ -942,21 +902,20 @@ with tab_macro:
     regime_cols[0].metric(
         "Inflation regime",
         macro_state["inflation_regime"],
-        f"YoY {macro_state['inflation_yoy']:.2f}%"
+        f"YoY {macro_state['inflation_yoy']:.2f}%",
     )
     regime_cols[1].metric(
         "Unemployment regime",
         macro_state["unemployment_regime"],
-        f"Level {macro_state['unemployment']:.2f}%"
+        f"Level {macro_state['unemployment']:.2f}%",
     )
     regime_cols[2].metric(
         "Rate direction",
         macro_state["rate_direction"],
-        delta=f"{macro_state['rate_level'] - macro_state['prev_rate']:+.2f}%"
+        f"Latest {macro_state['rate_level']:.2f}%",
     )
 
     st.markdown(macro_summary)
-
 
     macro_cols = st.columns(3)
     with macro_cols[0]:
@@ -995,82 +954,71 @@ with tab_single:
     margin = st.slider("Net margin (%)", min_value=-20.0, max_value=50.0, value=15.0, step=0.5)
     cost_equity = st.slider("Cost of equity (%)", min_value=2.0, max_value=20.0, value=8.0, step=0.5)
 
+    if ticker_input:
+        try:
+            fin = load_company_financials(ticker_input)
+            fin_kpis = add_kpis(fin)
 
-if ticker_input:
-    try:
-        fin = load_company_financials(ticker_input)
-    except Exception as e:
-        st.error(f"Error loading financials for {ticker_input}: {e}")
-    else:
-        fin_kpis = add_kpis(fin)
-
-        if fin_kpis.empty:
-            st.warning("No annual financials found for this ticker. Try another symbol.")
-        else:
-            info = fin.get("info") or {}
-
-            # DEBUG: inspect what yfinance is actually giving us
-            st.write("DEBUG info keys:", list(info.keys()))
-            st.write("DEBUG raw marketCap:", info.get("marketCap"))
-            st.write("DEBUG raw trailingPE:", info.get("trailingPE"))
-            st.write("DEBUG raw priceToBook:", info.get("priceToBook"))
-            st.write("DEBUG raw freeCashflow:", info.get("freeCashflow"))
-
-            valuations = valuation_from_info(
-                info,
-                fin_kpis.iloc[-1].get("Revenue", math.nan)
-            )
-
-            st.markdown("### Financial KPIs (latest years)")
-            st.dataframe(fin_kpis.round(2))
-
-            # robust, safe formatter
-            def fmt_number(x, fmt: str, fallback: str = "N/A") -> str:
-                try:
-                    if x is None:
-                        return fallback
-                    if isinstance(x, float) and math.isnan(x):
-                        return fallback
-                    return format(x, fmt)
-                except Exception:
-                    return fallback
-
-            # valuation metrics
-            val_cols = st.columns(4)
-            val_cols[0].metric("Market cap", fmt_number(valuations.get("MarketCap"), ",.0f"))
-            val_cols[1].metric("Trailing PE", fmt_number(valuations.get("TrailingPE"), ".2f"))
-            val_cols[2].metric("PB", fmt_number(valuations.get("PriceToBook"), ".2f"))
-            val_cols[3].metric("FCF yield (%)", fmt_number(valuations.get("FCF_YieldPct"), ".2f"))
-
-            # DCF block
-            dcf_result = quick_dcf_value(fin_kpis, info, growth, margin, cost_equity)
-            if dcf_result:
-                st.markdown("### Simple one-period DCF scenario")
-                dcf_cols = st.columns(3)
-                dcf_cols[0].metric("Forward revenue", f"{dcf_result['forward_revenue']:,.0f}")
-                dcf_cols[1].metric("Forward income", f"{dcf_result['forward_income']:,.0f}")
-                dcf_cols[2].metric("Equity value", f"{dcf_result['equity_value']:,.0f}")
-                if not math.isnan(dcf_result.get("per_share_value", math.nan)):
-                    st.info(f"Implied value per share: {dcf_result['per_share_value']:.2f}")
+            if fin_kpis.empty:
+                st.warning("No annual financials found for this ticker. Try another symbol.")
             else:
-                st.info("Adjust the sliders to compute a quick DCF view.")
+                info = fin.get("info") or {}
+                valuations = valuation_from_info(info, fin_kpis.iloc[-1].get("Revenue", math.nan))
 
-            st.markdown("### Equity snapshot")
-            st.markdown(equity_snapshot_text(ticker_input, fin_kpis))
+                st.markdown("### Financial KPIs (latest years)")
+                st.dataframe(fin_kpis.round(2))
 
-            st.markdown("### Macro aware view")
-            st.markdown(combined_view_text(ticker_input, fin_kpis, macro_state))
+                val_cols = st.columns(4)
+                val_cols[0].metric(
+                    "Market cap",
+                    _format_metric_value(valuations["MarketCap"], "{:,.0f}"),
+                )
+                val_cols[1].metric(
+                    "Trailing PE", _format_metric_value(valuations["TrailingPE"], "{:.2f}")
+                )
+                val_cols[2].metric(
+                    "PB", _format_metric_value(valuations["PriceToBook"], "{:.2f}")
+                )
+                val_cols[3].metric(
+                    "FCF yield (%)",
+                    _format_metric_value(valuations["FCF_YieldPct"], "{:.2f}"),
+                )
 
-            st.markdown("### Relative performance vs macro")
-            try:
+                dcf_result = quick_dcf_value(fin_kpis, info, growth, margin, cost_equity)
+                if dcf_result:
+                    st.markdown("### Simple one-period DCF scenario")
+                    dcf_cols = st.columns(3)
+                    dcf_cols[0].metric("Forward revenue", f"{dcf_result['forward_revenue']:,.0f}")
+                    dcf_cols[1].metric("Forward income", f"{dcf_result['forward_income']:,.0f}")
+                    dcf_cols[2].metric("Equity value", f"{dcf_result['equity_value']:,.0f}")
+                    if not math.isnan(dcf_result.get("per_share_value", math.nan)):
+                        st.info(f"Implied value per share: {dcf_result['per_share_value']:.2f}")
+                else:
+                    st.info("Adjust the sliders to compute a quick DCF view.")
+
+                st.markdown("### Equity snapshot")
+                st.markdown(equity_snapshot_text(ticker_input, fin_kpis))
+
+                st.markdown("### Macro aware view")
+                st.markdown(combined_view_text(ticker_input, fin_kpis, macro_state))
+
+                perf_cols = st.columns(2)
+                with perf_cols[0]:
+                    st.markdown("**Revenue by year**")
+                    st.bar_chart(fin_kpis["Revenue"])
+                with perf_cols[1]:
+                    st.markdown("**Net margin (%) by year**")
+                    st.bar_chart(fin_kpis["NetMarginPct"])
+
+                st.markdown("### Relative performance vs macro")
                 price_macro = price_vs_macro(ticker_input, cpi)
                 if price_macro.empty:
                     st.info("Not enough price history to plot performance vs macro.")
                 else:
                     st.line_chart(price_macro)
-            except Exception as e:
-                st.warning(f"Could not load price vs macro chart: {e}")
 
+        except Exception as e:
+            st.error(f"Could not load data for {ticker_input}: {e}")
 
 with tab_portfolio:
     st.subheader("Portfolio view")
@@ -1089,7 +1037,7 @@ with tab_portfolio:
 
     tickers = [t.upper().strip() for t in default_selection]
     if extra_tickers:
-       tickers.extend([t.strip().upper() for t in extra_tickers.split(",")])
+        tickers.extend([t.strip().upper() for t in extra_tickers.split(",")])
 
     if use_valid_tickers:
         tickers = [t for t in tickers if t]
