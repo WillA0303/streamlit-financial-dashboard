@@ -432,22 +432,18 @@ def load_company_financials(ticker: str) -> Dict[str, Any]:
         cashflow = _safe_df_call("get_cashflow")
 
     # Company info / metadata
+    # Company info / metadata
     try:
-        info = tk.info
+        info = tk.get_info()
     except Exception:
         info = {}
-    if not info:
-        try:
-            info = tk.get_info()
-        except Exception:
-            info = {}
-
-    return {
-        "ticker": ticker,
-        "info": info,
-        "income": income,
-        "balance": balance,
-        "cashflow": cashflow,
+    
+        return {
+            "ticker": ticker,
+            "info": info,
+            "income": income,
+            "balance": balance,
+            "cashflow": cashflow,
     }
 
 
@@ -735,19 +731,34 @@ def quick_dcf_value(
 
 def price_vs_macro(ticker: str, cpi_df: pd.DataFrame) -> pd.DataFrame:
     price_hist = yf.download(ticker, period="10y", progress=False)
-    if price_hist.empty:
+    if price_hist is None or len(price_hist) == 0:
         return pd.DataFrame()
 
-    prices = price_hist["Adj Close"]
+    # Robust selection of a price series
+    if isinstance(price_hist, pd.DataFrame):
+        if "Adj Close" in price_hist.columns:
+            prices = price_hist["Adj Close"]
+        elif "Close" in price_hist.columns:
+            prices = price_hist["Close"]
+        else:
+            # No usable price column
+            return pd.DataFrame()
+    else:
+        # If yfinance ever returns a Series, just use it as-is
+        prices = price_hist
+
     rolling_return = prices.pct_change(252) * 100
 
+    # Align CPI YoY with business days
     cpi_yoy = cpi_df[["CPI_YoY"]].resample("B").ffill()
 
     combined = pd.concat(
-        [rolling_return.rename("PriceReturn12M"), cpi_yoy["CPI_YoY"]], axis=1
+        [rolling_return.rename("PriceReturn12M"), cpi_yoy["CPI_YoY"]],
+        axis=1,
     ).dropna()
 
     return combined
+
 
 
 def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
