@@ -9,7 +9,7 @@ import math
 import pandas as pd
 import yfinance as yf
 import streamlit as st
-from pandas_datareader import data as pdr
+import requests
 
 # -----------------------
 # Configuration
@@ -25,14 +25,14 @@ MACRO_SERIES: Dict[str, Dict[str, str]] = {
         "rate": "FEDFUNDS",       # Effective Federal Funds Rate
     },
     "United Kingdom": {
-        "cpi": "GBRCPIALLMINMEI",   # CPI All Items
+        "cpi": "GBRCPIALLMINMEI",     # CPI All Items
         "unemployment": "LRHUTTTTGBQ156S",  # Harmonized unemployment rate
-        "rate": "BOEBASE",          # Bank of England Bank Rate
+        "rate": "BOEBASE",            # Bank of England Bank Rate
     },
     "Euro Area": {
-        "cpi": "CP0000EZ19M086NEST", # Euro Area CPI All Items
+        "cpi": "CP0000EZ19M086NEST",  # Euro Area CPI All Items
         "unemployment": "LRHUTTTTEZM156S",  # Harmonized unemployment rate
-        "rate": "ECBDFR",            # ECB Deposit Facility Rate
+        "rate": "ECBDFR",             # ECB Deposit Facility Rate
     },
 }
 
@@ -107,18 +107,52 @@ def _load_from_csv(filename: str, column: str) -> pd.DataFrame:
 
 
 def fetch_macro_series(series_id: str, name: str) -> pd.DataFrame:
-    """Fetch a single FRED series and return a Date-indexed DataFrame."""
-    series = pdr.DataReader(series_id, "fred")
-    series = series.rename(columns={series_id: name}).dropna().sort_index()
-    return series
+    """
+    Fetch a single FRED series by downloading its CSV directly.
+
+    Uses the public FRED CSV endpoint:
+    https://fred.stlouisfed.org/graph/fredgraph.csv?id=SERIES_ID
+    """
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+
+    df = pd.read_csv(pd.compat.StringIO(resp.text), parse_dates=["DATE"])
+    df = (
+        df.rename(columns={"DATE": "Date", series_id: name})
+        .set_index("Date")
+        .sort_index()
+        .dropna()
+    )
+    return df
 
 
-def _fallback_macro_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Use bundled CSVs as an offline fallback (UK only)."""
-    cpi = _load_from_csv("cpi_uk.csv", "CPI")
-    unemp = _load_from_csv("unemployment_uk.csv", "Unemployment")
-    base_rate = _load_from_csv("base_rate_uk.csv", "BaseRate")
+def _fallback_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Offline / local CSV fallback for macro data.
+
+    Expects CSVs with columns: Date, Value in data/macro.
+    """
+    if country == "United Kingdom":
+        cpi = _load_from_csv("cpi_uk.csv", "CPI")
+        unemp = _load_from_csv("unemployment_uk.csv", "Unemployment")
+        base_rate = _load_from_csv("base_rate_uk.csv", "BaseRate")
+    elif country == "United States":
+        cpi = _load_from_csv("cpi_us.csv", "CPI")
+        unemp = _load_from_csv("unemployment_us.csv", "Unemployment")
+        base_rate = _load_from_csv("base_rate_us.csv", "BaseRate")
+    elif country == "Euro Area":
+        cpi = _load_from_csv("cpi_ea.csv", "CPI")
+        unemp = _load_from_csv("unemployment_ea.csv", "Unemployment")
+        base_rate = _load_from_csv("base_rate_ea.csv", "BaseRate")
+    else:
+        # Default to UK if something unexpected slips through
+        cpi = _load_from_csv("cpi_uk.csv", "CPI")
+        unemp = _load_from_csv("unemployment_uk.csv", "Unemployment")
+        base_rate = _load_from_csv("base_rate_uk.csv", "BaseRate")
+
     return cpi, unemp, base_rate
+
 
 
 @st.cache_data
@@ -126,9 +160,21 @@ def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     """
     Load CPI, unemployment and policy rate series for a country.
 
-    Tries live FRED data when available; falls back to local CSVs for the UK.
+    - First choice: live FRED (for US/UK/Euro if available).
+    - Fallback: local CSVs per country in data/macro.
+
     Returns (cpi_df, unemployment_df, rate_df, source_label).
     """
+
+    # Always have a local fallback available
+    # (this will raise if the CSVs are missing or malformed)
+    try:
+        local_cpi, local_unemp, local_rate = _fallback_macro_data(country)
+    except Exception as e:
+        # If even the local files fail, propagate the error
+        raise RuntimeError(f"Local CSV fallback failed for {country}: {e}")
+
+    # Try live FRED where configured
     if country in MACRO_SERIES:
         series_map = MACRO_SERIES[country]
         try:
@@ -137,11 +183,13 @@ def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
             base_rate = fetch_macro_series(series_map["rate"], "BaseRate")
             return cpi, unemp, base_rate, "Live FRED"
         except Exception:
-            # fall back to local data if available
-            pass
+            # FRED failed – fall back to local CSV for that country
+            return local_cpi, local_unemp, local_rate, f"Local CSV fallback ({country})"
 
-    cpi, unemp, base_rate = _fallback_macro_data()
-    return cpi, unemp, base_rate, "Local CSV fallback (UK)"
+    # If country not in MACRO_SERIES, just use local CSV
+    return local_cpi, local_unemp, local_rate, f"Local CSV ({country})"
+
+
 
 
 def add_macro_features(
@@ -226,6 +274,7 @@ def macro_summary_text(
     return summary
 
 
+
 def infer_macro_state(
     cpi_df: pd.DataFrame,
     unemp_df: pd.DataFrame,
@@ -297,7 +346,6 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
     if income is None or income.empty:
         return pd.DataFrame()
 
-    # yfinance uses columns as periods (most recent first)
     years = list(income.columns)
 
     rev_label = _find_row_label(
@@ -308,7 +356,6 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
         income,
         ["Net Income", "NetIncome", "Net income applicable to common shares"],
     )
-
     eq_label = _find_equity_label(balance) if balance is not None and not balance.empty else None
 
     debt_labels = [
@@ -342,7 +389,6 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
 
         eq = _to_float(balance.loc[eq_label, col]) if eq_label and eq_label in balance.index else math.nan
 
-        # Approximate debt as sum of available debt labels
         debt = 0.0
         if balance is not None and not balance.empty:
             for dl in debt_labels:
@@ -504,18 +550,19 @@ extra_tickers = st.sidebar.text_input(
 )
 
 # Load macro
+# Load macro
 try:
     cpi_raw, unemp_raw, rate_raw, source_label = load_macro_data(country)
     cpi, unemp = add_macro_features(cpi_raw, unemp_raw)
     macro_state = infer_macro_state(cpi, unemp, rate_raw)
-    summary_country = country if "Live" in source_label else "United Kingdom (fallback)"
-    macro_summary = macro_summary_text(cpi, unemp, rate_raw, summary_country, source_label)
+    macro_summary = macro_summary_text(cpi, unemp, rate_raw, country, source_label)
 except Exception as e:
     st.error(f"Error loading macro data: {e}")
     st.stop()
 
 # Macro overview at top
 st.subheader("Macro overview")
+st.markdown(f"**Data source:** {source_label}")
 st.markdown(macro_summary)
 
 macro_cols = st.columns(3)
@@ -561,4 +608,60 @@ if mode == "Single company":
                 st.markdown("### Macro aware view")
                 st.markdown(combined_view_text(ticker_input, fin_kpis, macro_state))
 
-                c1, c2 = st.colum
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Revenue by year**")
+                    st.bar_chart(fin_kpis["Revenue"])
+                with c2:
+                    st.markdown("**Net margin (%) by year**")
+                    st.bar_chart(fin_kpis["NetMarginPct"])
+
+        except Exception as e:
+            st.error(f"Could not load data for {ticker_input}: {e}")
+
+# -----------------------
+# Mode: Portfolio
+# -----------------------
+else:
+    st.subheader("Portfolio view")
+
+    tickers = [t.upper().strip() for t in default_selection if t.strip()]
+    if extra_tickers:
+        tickers.extend([t.strip().upper() for t in extra_tickers.split(",") if t.strip()])
+
+    tickers = sorted(set(tickers))
+
+    if not tickers:
+        st.warning("Please choose at least one ticker to build the portfolio table.")
+        st.stop()
+
+    st.markdown(f"Default portfolio tickers: `{', '.join(PORTFOLIO_TICKERS)}`")
+    st.markdown(f"Active portfolio tickers ({len(tickers)}): `{', '.join(tickers)}`")
+
+    portfolio_df, failures = build_portfolio_table(tickers)
+
+    if portfolio_df.empty:
+        st.error("Could not build portfolio table (no tickers succeeded).")
+    else:
+        st.markdown("### Portfolio fundamentals (latest year per company)")
+        st.dataframe(portfolio_df.round(2))
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Revenue (latest year)**")
+            st.bar_chart(portfolio_df["Revenue"])
+        with c2:
+            st.markdown("**ROE (%) (latest year)**")
+            st.bar_chart(portfolio_df["ROE_Pct"])
+
+        c3, c4 = st.columns(2)
+        with c3:
+            st.markdown("**Net margin (%) (latest year)**")
+            st.bar_chart(portfolio_df["NetMarginPct"])
+        with c4:
+            st.markdown("**Debt to equity (latest year)**")
+            st.bar_chart(portfolio_df["DebtToEquity"])
+
+        if failures:
+            fail_str = ", ".join([f"{t} ({msg})" for t, msg in failures])
+            st.warning(f"Some tickers failed to load: {fail_str}")
