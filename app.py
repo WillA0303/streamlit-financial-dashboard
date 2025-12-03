@@ -1040,15 +1040,17 @@ if ticker_input:
         else:
             info = fin.get("info") or {}
 
-# DEBUG: inspect what yfinance is actually giving us
-st.write("DEBUG info keys:", list(info.keys()))
-st.write("DEBUG raw marketCap:", info.get("marketCap"))
-st.write("DEBUG raw trailingPE:", info.get("trailingPE"))
-st.write("DEBUG raw priceToBook:", info.get("priceToBook"))
-st.write("DEBUG raw freeCashflow:", info.get("freeCashflow"))
+            # DEBUG: inspect what yfinance is actually giving us
+            st.write("DEBUG info keys:", list(info.keys()))
+            st.write("DEBUG raw marketCap:", info.get("marketCap"))
+            st.write("DEBUG raw trailingPE:", info.get("trailingPE"))
+            st.write("DEBUG raw priceToBook:", info.get("priceToBook"))
+            st.write("DEBUG raw freeCashflow:", info.get("freeCashflow"))
 
-valuations = valuation_from_info(info, fin_kpis.iloc[-1].get("Revenue", math.nan))
-
+            valuations = valuation_from_info(
+                info,
+                fin_kpis.iloc[-1].get("Revenue", math.nan)
+            )
 
             st.markdown("### Financial KPIs (latest years)")
             st.dataframe(fin_kpis.round(2))
