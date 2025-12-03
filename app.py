@@ -252,6 +252,40 @@ def classify_unemployment(level: float) -> str:
         return "high"
 
 
+def _align_macro_series(
+    cpi_df: pd.DataFrame,
+    unemp_df: pd.DataFrame,
+    rate_df: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Align CPI, unemployment, and rates to shared monthly dates.
+
+    - Resamples each series to month start to smooth over daily policy-rate points.
+    - Drops any months where one of the series is missing.
+    """
+
+    def _to_monthly(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+        monthly = df.copy()
+        monthly.index = pd.to_datetime(monthly.index)
+        monthly = monthly[cols].resample("MS").last().dropna(how="all")
+        return monthly
+
+    cpi_monthly = _to_monthly(cpi_df, list(cpi_df.columns))
+    unemp_monthly = _to_monthly(unemp_df, list(unemp_df.columns))
+    rate_monthly = _to_monthly(rate_df, list(rate_df.columns))
+
+    common_dates = (
+        cpi_monthly.index.intersection(unemp_monthly.index).intersection(rate_monthly.index)
+    )
+    if common_dates.empty:
+        raise ValueError("Macro series have no overlapping monthly dates; cannot build summary")
+
+    cpi_aligned = cpi_monthly.loc[common_dates].sort_index()
+    unemp_aligned = unemp_monthly.loc[common_dates].sort_index()
+    rate_aligned = rate_monthly.loc[common_dates].sort_index()
+
+    return cpi_aligned, unemp_aligned, rate_aligned
+
+
 def macro_summary_text(
     cpi_df: pd.DataFrame,
     unemp_df: pd.DataFrame,
@@ -263,6 +297,10 @@ def macro_summary_text(
         if df is None or df.empty:
             raise ValueError("Macro data is empty; cannot build summary")
 
+    cpi_aligned, unemp_aligned, rate_aligned = _align_macro_series(
+        cpi_df, unemp_df, rate_df
+    )
+
     def latest_and_previous(series: pd.Series) -> Tuple[float, float]:
         if len(series) >= 2:
             return series.iloc[-1], series.iloc[-2]
@@ -270,16 +308,15 @@ def macro_summary_text(
             return series.iloc[-1], series.iloc[-1]
         return math.nan, math.nan
 
-    latest_idx = min(cpi_df.index[-1], unemp_df.index[-1], rate_df.index[-1])
-    latest_date = latest_idx.date()
+    latest_date = cpi_aligned.index[-1].date()
 
-    latest_cpi, prev_cpi = latest_and_previous(cpi_df["CPI"])
-    latest_cpi_yoy = cpi_df["CPI_YoY"].loc[latest_idx]
+    latest_cpi, prev_cpi = latest_and_previous(cpi_aligned["CPI"])
+    latest_cpi_yoy = cpi_aligned["CPI_YoY"].iloc[-1]
 
-    latest_unemp, prev_unemp = latest_and_previous(unemp_df["Unemployment"])
-    latest_unemp_yoy = unemp_df["Unemployment_YoY"].loc[latest_idx]
+    latest_unemp, prev_unemp = latest_and_previous(unemp_aligned["Unemployment"])
+    latest_unemp_yoy = unemp_aligned["Unemployment_YoY"].iloc[-1]
 
-    latest_rate, prev_rate = latest_and_previous(rate_df["BaseRate"])
+    latest_rate, prev_rate = latest_and_previous(rate_aligned["BaseRate"])
     rate_change = latest_rate - prev_rate
 
     def direction(latest: float, previous: float) -> str:
@@ -317,16 +354,18 @@ def infer_macro_state(
     if cpi_df.empty or unemp_df.empty or rate_df.empty:
         raise ValueError("Macro data missing for regime inference")
 
-    latest_idx = min(cpi_df.index[-1], unemp_df.index[-1], rate_df.index[-1])
+    cpi_aligned, unemp_aligned, rate_aligned = _align_macro_series(
+        cpi_df, unemp_df, rate_df
+    )
 
-    latest_cpi_yoy = cpi_df.loc[latest_idx, "CPI_YoY"]
-    latest_unemp = unemp_df.loc[latest_idx, "Unemployment"]
+    latest_cpi_yoy = cpi_aligned["CPI_YoY"].iloc[-1]
+    latest_unemp = unemp_aligned["Unemployment"].iloc[-1]
 
-    if len(rate_df) >= 2:
-        latest_rate = rate_df["BaseRate"].iloc[-1]
-        prev_rate = rate_df["BaseRate"].iloc[-2]
+    if len(rate_aligned) >= 2:
+        latest_rate = rate_aligned["BaseRate"].iloc[-1]
+        prev_rate = rate_aligned["BaseRate"].iloc[-2]
     else:
-        latest_rate = rate_df["BaseRate"].iloc[-1]
+        latest_rate = rate_aligned["BaseRate"].iloc[-1]
         prev_rate = latest_rate
 
     if latest_rate > prev_rate:
