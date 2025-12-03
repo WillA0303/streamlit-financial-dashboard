@@ -390,12 +390,48 @@ def infer_macro_state(
 def load_company_financials(ticker: str) -> Dict[str, Any]:
     tk = yf.Ticker(ticker)
 
-    # Financial statements (annual)
-    income = tk.financials
-    balance = tk.balance_sheet
-    cashflow = tk.cashflow
+    def _safe_df_attr(attr_name: str) -> pd.DataFrame:
+        try:
+            obj = getattr(tk, attr_name)
+        except Exception:
+            return pd.DataFrame()
+        if obj is None:
+            return pd.DataFrame()
+        if isinstance(obj, pd.DataFrame) and obj.empty:
+            return pd.DataFrame()
+        return obj
 
-    # Info
+    def _safe_df_call(method_name: str) -> pd.DataFrame:
+        try:
+            method = getattr(tk, method_name)
+        except Exception:
+            return pd.DataFrame()
+        try:
+            df = method()
+        except Exception:
+            return pd.DataFrame()
+        if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+            return pd.DataFrame()
+        return df
+
+    # Income statement (annual)
+    income = _safe_df_attr("financials")
+    if income.empty:
+        income = _safe_df_attr("income_stmt")
+    if income.empty:
+        income = _safe_df_call("get_financials")
+
+    # Balance sheet (annual)
+    balance = _safe_df_attr("balance_sheet")
+    if balance.empty:
+        balance = _safe_df_call("get_balance_sheet")
+
+    # Cash flow statement (annual)
+    cashflow = _safe_df_attr("cashflow")
+    if cashflow.empty:
+        cashflow = _safe_df_call("get_cashflow")
+
+    # Company info / metadata
     try:
         info = tk.info
     except Exception:
