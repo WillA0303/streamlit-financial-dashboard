@@ -246,117 +246,19 @@ def classify_unemployment(level: float) -> str:
         return "not enough data"
     if level < 4:
         return "low"
-    elif level < 6:
-        return "normal"
+    elif level < 7:
+        return "moderate"
     else:
-        return "high"
+        return "elevated"
 
 
-def _align_macro_series(
-    cpi_df: pd.DataFrame,
-    unemp_df: pd.DataFrame,
-    rate_df: pd.DataFrame,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Align CPI, unemployment, and rates to shared monthly dates.
+def summarize_macro_state(cpi: pd.DataFrame, unemp: pd.DataFrame, rate: pd.DataFrame) -> Dict[str, Any]:
+    cpi_aligned = cpi.last("5Y").copy()
+    unemp_aligned = unemp.last("5Y").copy()
+    rate_aligned = rate.last("5Y").copy()
 
-    - Resamples each series to month start to smooth over daily policy-rate points.
-    - Drops any months where one of the series is missing.
-    """
-
-    def _to_monthly(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-        monthly = df.copy()
-        monthly.index = pd.to_datetime(monthly.index)
-        monthly = monthly[cols].resample("MS").last().dropna(how="all")
-        return monthly
-
-    cpi_monthly = _to_monthly(cpi_df, list(cpi_df.columns))
-    unemp_monthly = _to_monthly(unemp_df, list(unemp_df.columns))
-    rate_monthly = _to_monthly(rate_df, list(rate_df.columns))
-
-    common_dates = (
-        cpi_monthly.index.intersection(unemp_monthly.index).intersection(rate_monthly.index)
-    )
-    if common_dates.empty:
-        raise ValueError("Macro series have no overlapping monthly dates; cannot build summary")
-
-    cpi_aligned = cpi_monthly.loc[common_dates].sort_index()
-    unemp_aligned = unemp_monthly.loc[common_dates].sort_index()
-    rate_aligned = rate_monthly.loc[common_dates].sort_index()
-
-    return cpi_aligned, unemp_aligned, rate_aligned
-
-
-def macro_summary_text(
-    cpi_df: pd.DataFrame,
-    unemp_df: pd.DataFrame,
-    rate_df: pd.DataFrame,
-    country: str,
-    source: str,
-) -> str:
-    for df in (cpi_df, unemp_df, rate_df):
-        if df is None or df.empty:
-            raise ValueError("Macro data is empty; cannot build summary")
-
-    cpi_aligned, unemp_aligned, rate_aligned = _align_macro_series(
-        cpi_df, unemp_df, rate_df
-    )
-
-    def latest_and_previous(series: pd.Series) -> Tuple[float, float]:
-        if len(series) >= 2:
-            return series.iloc[-1], series.iloc[-2]
-        if len(series) == 1:
-            return series.iloc[-1], series.iloc[-1]
-        return math.nan, math.nan
-
-    latest_date = cpi_aligned.index[-1].date()
-
-    latest_cpi, prev_cpi = latest_and_previous(cpi_aligned["CPI"])
-    latest_cpi_yoy = cpi_aligned["CPI_YoY"].iloc[-1]
-
-    latest_unemp, prev_unemp = latest_and_previous(unemp_aligned["Unemployment"])
-    latest_unemp_yoy = unemp_aligned["Unemployment_YoY"].iloc[-1]
-
-    latest_rate, prev_rate = latest_and_previous(rate_aligned["BaseRate"])
-    rate_change = latest_rate - prev_rate
-
-    def direction(latest: float, previous: float) -> str:
-        if latest > previous:
-            return "rising"
-        elif latest < previous:
-            return "falling"
-        else:
-            return "unchanged"
-
-    cpi_dir = direction(latest_cpi, prev_cpi)
-    unemp_dir = direction(latest_unemp, prev_unemp)
-    rate_dir = direction(latest_rate, prev_rate)
-
-    inflation_regime = classify_inflation(latest_cpi_yoy)
-    unemployment_regime = classify_unemployment(latest_unemp)
-
-    summary = f"""
-**{country} Macro Summary** (sample ending {latest_date} – {source})
-
-- CPI level: {latest_cpi:.2f} | YoY: {latest_cpi_yoy:.2f}% | Direction: {cpi_dir} | Regime: {inflation_regime}
-- Unemployment: {latest_unemp:.2f}% | YoY: {latest_unemp_yoy:.2f}% | Direction: {unemp_dir} | Regime: {unemployment_regime}
-- Policy rate: {latest_rate:.2f}% | Change vs last: {rate_change:+.2f} | Direction: {rate_dir}
-"""
-    return summary
-
-
-
-
-def infer_macro_state(
-    cpi_df: pd.DataFrame,
-    unemp_df: pd.DataFrame,
-    rate_df: pd.DataFrame,
-) -> Dict[str, Any]:
-    if cpi_df.empty or unemp_df.empty or rate_df.empty:
-        raise ValueError("Macro data missing for regime inference")
-
-    cpi_aligned, unemp_aligned, rate_aligned = _align_macro_series(
-        cpi_df, unemp_df, rate_df
-    )
+    if "CPI_YoY" not in cpi_aligned.columns and "CPI" in cpi_aligned.columns:
+        cpi_aligned["CPI_YoY"] = cpi_aligned["CPI"].pct_change(periods=12) * 100
 
     latest_cpi_yoy = cpi_aligned["CPI_YoY"].iloc[-1]
     latest_unemp = unemp_aligned["Unemployment"].iloc[-1]
@@ -426,17 +328,22 @@ def _load_ticker_info(tk: yf.Ticker) -> Dict[str, Any]:
         except Exception:
             return {}
 
+    merged: Dict[str, Any] = {}
     for getter in (
         _candidate_info,
         _candidate_get_info,
         _candidate_fast_info,
         _candidate_get_fast_info,
     ):
-        info = getter()
-        if info:
-            return info
+        candidate = getter()
+        if not candidate:
+            continue
 
-    return {}
+        for key, value in candidate.items():
+            if key not in merged or merged.get(key) in (None, "", math.nan):
+                merged[key] = value
+
+    return merged
 
 
 @st.cache_data
@@ -523,178 +430,61 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
             cashflow,
             [
                 "Capital Expenditures",
+                "CapitalExpenditures",
+                "PurchaseOfPropertyPlantAndEquipment",
                 "Capital expenditure",
-                "Capital expenditures",
-                "Purchase of property plant and equipment",
-                "Purchase of property, plant and equipment",
-                "Purchase of property and equipment",
-                "Purchase of fixed assets",
-                "Additions to property plant and equipment",
             ],
         )
     else:
         ocf_label = None
         capex_label = None
 
-    rows: List[Dict[str, Any]] = []
+    # Debt value (prefer long-term + current)
+    debt_val = None
+    if balance is not None and not balance.empty:
+        for lbl in debt_labels:
+            val = balance.loc[lbl, years[0]] if lbl in balance.index else None
+            if val is not None and not (isinstance(val, float) and math.isnan(val)):
+                debt_val = val
+                break
 
-    for col in years:
-        year_str = str(col)
+    data = {
+        "Revenue": [income.loc[rev_label, y] if rev_label in income.index else math.nan for y in years],
+        "NetIncome": [income.loc[ni_label, y] if ni_label in income.index else math.nan for y in years],
+        "Equity": [balance.loc[eq_label, y] if eq_label in balance.index else math.nan for y in years]
+        if balance is not None and not balance.empty
+        else [math.nan for _ in years],
+        "Debt": [debt_val for _ in years],
+        "OperatingCashFlow": [
+            cashflow.loc[ocf_label, y] if cashflow is not None and ocf_label in cashflow.index else math.nan
+            for y in years
+        ],
+        "Capex": [cashflow.loc[capex_label, y] if cashflow is not None and capex_label in cashflow.index else math.nan for y in years],
+    }
 
-        # Revenue and net income
-        rev = _to_float(income.loc[rev_label, col]) if rev_label in income.index else math.nan
-        ni = _to_float(income.loc[ni_label, col]) if ni_label in income.index else math.nan
+    df = pd.DataFrame(data, index=years)
 
-        # Equity
-        if balance is not None and not balance.empty and eq_label and eq_label in balance.index:
-            eq = _to_float(balance.loc[eq_label, col])
-        else:
-            eq = math.nan
+    df["NetMarginPct"] = (df["NetIncome"] / df["Revenue"]) * 100
+    df["ROE_Pct"] = (df["NetIncome"] / df["Equity"]) * 100
+    df["DebtToEquity"] = df["Debt"] / df["Equity"]
+    df["CashConversionPct"] = (df["OperatingCashFlow"] / df["NetIncome"]) * 100
+    df["CapexToRevenuePct"] = (df["Capex"] / df["Revenue"]) * 100
 
-        # Debt (sum of any available debt rows)
-        debt = 0.0
-        if balance is not None and not balance.empty:
-            for dl in debt_labels:
-                if dl in balance.index:
-                    debt_val = _to_float(balance.loc[dl, col])
-                    if not math.isnan(debt_val):
-                        debt += debt_val
-        if debt == 0:
-            debt = math.nan
-
-        # Operating cash flow
-        if cashflow is not None and not cashflow.empty and ocf_label and ocf_label in cashflow.index:
-            ocf = _to_float(cashflow.loc[ocf_label, col])
-        else:
-            ocf = math.nan
-
-        # Capex
-        if cashflow is not None and not cashflow.empty and capex_label and capex_label in cashflow.index:
-            capex = _to_float(cashflow.loc[capex_label, col])
-        else:
-            capex = math.nan
-
-        # Ratios
-        net_margin = (
-            ni / rev * 100
-            if rev not in (0, math.nan) and not math.isnan(rev) and not math.isnan(ni)
-            else math.nan
-        )
-        roe = (
-            ni / eq * 100
-            if eq not in (0, math.nan) and not math.isnan(eq) and not math.isnan(ni)
-            else math.nan
-        )
-        debt_to_equity = (
-            debt / eq
-            if eq not in (0, math.nan) and not math.isnan(eq) and not math.isnan(debt)
-            else math.nan
-        )
-        cash_conv = (
-            ocf / ni * 100
-            if ni not in (0, math.nan) and not math.isnan(ni) and not math.isnan(ocf)
-            else math.nan
-        )
-        capex_to_rev = (
-            capex / rev * 100
-            if rev not in (0, math.nan) and not math.isnan(rev) and not math.isnan(capex)
-            else math.nan
-        )
-
-        rows.append(
-            {
-                "Year": year_str,
-                "Revenue": rev,
-                "NetIncome": ni,
-                "NetMarginPct": net_margin,
-                "Equity": eq,
-                "ROE_Pct": roe,
-                "Debt": debt,
-                "DebtToEquity": debt_to_equity,
-                "OperatingCashFlow": ocf,
-                "CashConversionPct": cash_conv,
-                "Capex": capex,
-                "CapexToRevenuePct": capex_to_rev,
-            }
-        )
-
-    df = pd.DataFrame(rows).set_index("Year")
+    df.index = df.index.astype(str)
 
     return df
 
 
-def equity_snapshot_text(ticker: str, fin_kpis: pd.DataFrame) -> str:
-    # Prefer the latest year where CapexToRevenuePct is available; otherwise use the last row
-    if "CapexToRevenuePct" in fin_kpis.columns:
-        non_nan = fin_kpis.dropna(subset=["CapexToRevenuePct"], how="all")
-        latest = non_nan.iloc[-1] if not non_nan.empty else fin_kpis.iloc[-1]
-    else:
-        latest = fin_kpis.iloc[-1]
-
-    rev = latest.get("Revenue", math.nan)
-    ni = latest.get("NetIncome", math.nan)
-    net_margin = latest.get("NetMarginPct", math.nan)
-    roe = latest.get("ROE_Pct", math.nan)
-    d_to_e = latest.get("DebtToEquity", math.nan)
-    cash_conv = latest.get("CashConversionPct", math.nan)
-    capex_rev = latest.get("CapexToRevenuePct", math.nan)
-
-    text = f"""
-**Equity snapshot for {ticker} (latest usable year in sample)**
-
-- Revenue: {rev:,.0f}
-- Net income: {ni:,.0f}
-- Net margin: {net_margin:.2f}%
-- ROE: {roe:.2f}%
-- Debt to equity: {d_to_e:.2f}
-- Cash conversion (OCF / NI): {cash_conv:.2f}%
-- Capex / revenue: {capex_rev:.2f}%
-"""
-    return text
-
-
-
-def combined_view_text(ticker: str, fin_kpis: pd.DataFrame, macro_state: Dict[str, Any]) -> str:
-    latest = fin_kpis.iloc[-1]
-
-    net_margin = latest.get("NetMarginPct", math.nan)
-    roe = latest.get("ROE_Pct", math.nan)
-
-    infl_reg = macro_state.get("inflation_regime", "unknown")
-    unemp_reg = macro_state.get("unemployment_regime", "unknown")
-    rate_dir = macro_state.get("rate_direction", "unknown")
-
-    text = f"""
-**Macro-aware view for {ticker}**
-
-- Profitability now: net margin {net_margin:.2f}%, ROE {roe:.2f}%.
-- Macro backdrop: inflation regime is **{infl_reg}**, unemployment is **{unemp_reg}**, policy rates are **{rate_dir}**.
-
-This is not a forecast, but a way to frame whether the current equity performance is happening in an easy or a tough macro environment.
-"""
-    return text
-
-
 def valuation_from_info(info: Dict[str, Any], latest_revenue: float) -> Dict[str, float]:
     market_cap = _to_float(info.get("marketCap"))
-    enterprise_value = _to_float(info.get("enterpriseValue"))
     trailing_pe = _to_float(info.get("trailingPE"))
     forward_pe = _to_float(info.get("forwardPE"))
     price_to_book = _to_float(info.get("priceToBook"))
-    free_cashflow = _to_float(info.get("freeCashflow"))
+    enterprise_value = _to_float(info.get("enterpriseValue"))
+    ev_to_sales = _to_float(info.get("enterpriseToRevenue"))
+    fcf = _to_float(info.get("freeCashflow"))
 
-    ev_to_sales = (
-        enterprise_value / latest_revenue
-        if latest_revenue not in (0, math.nan) and not math.isnan(latest_revenue)
-        and enterprise_value not in (0, math.nan) and not math.isnan(enterprise_value)
-        else math.nan
-    )
-    fcf_yield = (
-        free_cashflow / market_cap * 100
-        if market_cap not in (0, math.nan) and not math.isnan(market_cap)
-        and free_cashflow not in (0, math.nan) and not math.isnan(free_cashflow)
-        else math.nan
-    )
+    fcf_yield = (fcf / market_cap) * 100 if market_cap not in (0, math.nan) and not math.isnan(market_cap) else math.nan
 
     return {
         "MarketCap": market_cap,
@@ -703,7 +493,7 @@ def valuation_from_info(info: Dict[str, Any], latest_revenue: float) -> Dict[str
         "PriceToBook": price_to_book,
         "EnterpriseValue": enterprise_value,
         "EV_to_Sales": ev_to_sales,
-        "FreeCashFlow": free_cashflow,
+        "FreeCashFlow": fcf,
         "FCF_YieldPct": fcf_yield,
     }
 
@@ -715,9 +505,6 @@ def quick_dcf_value(
     net_margin_pct: float,
     cost_of_equity_pct: float,
 ) -> Dict[str, float]:
-    if fin_kpis.empty:
-        return {}
-
     latest_revenue = fin_kpis.iloc[-1].get("Revenue", math.nan)
     shares_outstanding = _to_float(info.get("sharesOutstanding"))
 
@@ -807,8 +594,8 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
                     info = {}
 
             name = info.get("shortName") or info.get("longName") or t_clean
-            sector = info.get("sector") or info.get("industry") or ""
-            country = info.get("country") or info.get("countryISO") or ""
+            sector = info.get("sector") or info.get("industry") or "Unknown"
+            country = info.get("country") or info.get("countryISO") or "Unknown"
 
             valuation = valuation_from_info(info, latest.get("Revenue", math.nan))
 
@@ -879,54 +666,48 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
     return df, failures
 
 
-
-
 # -----------------------
-# Streamlit layout
+# Streamlit UI
 # -----------------------
-def apply_horizon(df: pd.DataFrame, horizon_key: str) -> pd.DataFrame:
-    period = CONFIG["macro_horizons"].get(horizon_key)
-    if period:
-        try:
-            return df.last(period)
-        except Exception:
-            return df
-    return df
-
 
 st.set_page_config(
     page_title="Macro–Equity Dashboard",
     layout="wide",
+    page_icon="📈",
 )
 
 st.title("Macro–Equity Dashboard")
-st.caption("Always-on macro context plus live yfinance fundamentals for megacaps and your own watchlist.")
 
-st.sidebar.header("Settings")
-country = st.sidebar.selectbox("Macro country", list(MACRO_SERIES.keys()), index=1)
-horizon = st.sidebar.selectbox(
-    "Macro horizon", list(CONFIG["macro_horizons"].keys()), index=1
-)
+country = st.selectbox("Select country for macro overview", list(MACRO_SERIES.keys()))
 
 try:
-    cpi_raw, unemp_raw, rate_raw, source_label = load_macro_data(country)
-    cpi, unemp = add_macro_features(cpi_raw, unemp_raw)
-    macro_state = infer_macro_state(cpi, unemp, rate_raw)
-    macro_summary = macro_summary_text(cpi, unemp, rate_raw, country, source_label)
+    cpi_df, unemp_df, rate_df, source_label = load_macro_data(country)
 except Exception as e:
-    st.error(f"Error loading macro data: {e}")
+    st.error(f"Could not load macro data: {e}")
     st.stop()
 
-# Apply horizon for plotting and downloads
-cpi_plot = apply_horizon(cpi, horizon)
-unemp_plot = apply_horizon(unemp, horizon)
-rate_plot = apply_horizon(rate_raw, horizon)
+macro_state = summarize_macro_state(cpi_df, unemp_df, rate_df)
+macro_summary = f"""
+**Inflation:** {macro_state['inflation_regime']} (YoY {macro_state['inflation_yoy']:.2f}%)
+**Unemployment:** {macro_state['unemployment_regime']} (Level {macro_state['unemployment']:.2f}%)
+**Rates:** {macro_state['rate_direction']} (Latest {macro_state['rate_level']:.2f}%)
+"""
 
-macro_regime_label = (
-    f"Regime: {macro_state['inflation_regime']} inflation, "
-    f"{macro_state['unemployment_regime']} unemployment, "
-    f"{macro_state['rate_direction']} rates"
-)
+cpi, unemp = add_macro_features(cpi_df, unemp_df)
+rate = rate_df.copy()
+
+# Limit to selected horizon
+horizon_label = st.radio("Horizon", list(CONFIG["macro_horizons"].keys()), index=0)
+horizon_period = CONFIG["macro_horizons"][horizon_label]
+
+if horizon_period:
+    cpi_plot = cpi.last(horizon_period)
+    unemp_plot = unemp.last(horizon_period)
+    rate_plot = rate.last(horizon_period)
+else:
+    cpi_plot = cpi
+    unemp_plot = unemp
+    rate_plot = rate
 
 tab_macro, tab_single, tab_portfolio = st.tabs(
     ["Macro overview", "Single company", "Portfolio"]
@@ -935,7 +716,7 @@ tab_macro, tab_single, tab_portfolio = st.tabs(
 with tab_macro:
     st.subheader("Macro overview")
     st.markdown(f"**Data source:** {source_label}")
-    st.success(macro_regime_label)
+    st.success(macro_summary)
 
     regime_cols = st.columns(3)
     regime_cols[0].metric(
@@ -981,10 +762,22 @@ with tab_macro:
 with tab_single:
     st.subheader("Single company analysis")
 
-    preset = st.selectbox("Quick pick (top firms)", PORTFOLIO_TICKERS, index=1, key="single_preset")
+    if "single_ticker" not in st.session_state:
+        st.session_state["single_ticker"] = PORTFOLIO_TICKERS[1]
+
+    def _sync_single_preset() -> None:
+        st.session_state["single_ticker"] = st.session_state.get("single_preset", "").upper().strip()
+
+    preset = st.selectbox(
+        "Quick pick (top firms)",
+        PORTFOLIO_TICKERS,
+        index=1,
+        key="single_preset",
+        on_change=_sync_single_preset,
+    )
     ticker_input = st.text_input(
         "Ticker (yfinance symbol)",
-        value=preset,
+        value=st.session_state.get("single_ticker", preset),
         help="Any ticker supported by yfinance",
         key="single_ticker",
     ).upper().strip()
