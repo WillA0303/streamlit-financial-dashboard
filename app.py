@@ -971,24 +971,66 @@ with tab_single:
 
 
     if ticker_input:
-        try:
-            fin = load_company_financials(ticker_input)
-            fin_kpis = add_kpis(fin)
+    try:
+        fin = load_company_financials(ticker_input)
+    except Exception as e:
+        st.error(f"Error loading financials for {ticker_input}: {e}")
+    else:
+        fin_kpis = add_kpis(fin)
 
-            if fin_kpis.empty:
-                st.warning("No annual financials found for this ticker. Try another symbol.")
+        if fin_kpis.empty:
+            st.warning("No annual financials found for this ticker. Try another symbol.")
+        else:
+            info = fin.get("info") or {}
+            valuations = valuation_from_info(info, fin_kpis.iloc[-1].get("Revenue", math.nan))
+
+            st.markdown("### Financial KPIs (latest years)")
+            st.dataframe(fin_kpis.round(2))
+
+            # robust valuation metrics (from step 2)
+            def fmt_number(...):
+                ...
+            val_cols = st.columns(4)
+            ...
+
+            dcf_result = quick_dcf_value(fin_kpis, info, growth, margin, cost_equity)
+            if dcf_result:
+                ...
             else:
-                info = fin.get("info") or {}
-                valuations = valuation_from_info(info, fin_kpis.iloc[-1].get("Revenue", math.nan))
-                
-                st.markdown("### Financial KPIs (latest years)")
-                st.dataframe(fin_kpis.round(2))
+                st.info("Adjust the sliders to compute a quick DCF view.")
 
-                val_cols = st.columns(4)
-                val_cols[0].metric("Market cap", f"{valuations['MarketCap']:,.0f}")
-                val_cols[1].metric("Trailing PE", f"{valuations['TrailingPE']:.2f}")
-                val_cols[2].metric("PB", f"{valuations['PriceToBook']:.2f}")
-                val_cols[3].metric("FCF yield (%)", f"{valuations['FCF_YieldPct']:.2f}")
+            st.markdown("### Equity snapshot")
+            st.markdown(equity_snapshot_text(ticker_input, fin_kpis))
+
+            st.markdown("### Macro aware view")
+            st.markdown(combined_view_text(ticker_input, fin_kpis, macro_state))
+
+            st.markdown("### Relative performance vs macro")
+            try:
+                price_macro = price_vs_macro(ticker_input, cpi)
+                if price_macro.empty:
+                    st.info("Not enough price history to plot performance vs macro.")
+                else:
+                    st.line_chart(price_macro)
+            except Exception as e:
+                st.warning(f"Could not load price vs macro chart: {e}")
+
+def fmt_number(x, fmt: str, fallback: str = "N/A") -> str:
+    try:
+        if x is None:
+            return fallback
+        if isinstance(x, float) and math.isnan(x):
+            return fallback
+        return format(x, fmt)
+    except Exception:
+        return fallback
+
+val_cols = st.columns(4)
+val_cols[0].metric("Market cap", fmt_number(valuations.get("MarketCap"), ",.0f"))
+val_cols[1].metric("Trailing PE", fmt_number(valuations.get("TrailingPE"), ".2f"))
+val_cols[2].metric("PB", fmt_number(valuations.get("PriceToBook"), ".2f"))
+val_cols[3].metric("FCF yield (%)", fmt_number(valuations.get("FCF_YieldPct"), ".2f"))
+
 
                 dcf_result = quick_dcf_value(fin_kpis, info, growth, margin, cost_equity)
                 if dcf_result:
