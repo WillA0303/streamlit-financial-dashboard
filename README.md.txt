@@ -34,3 +34,17 @@ This app lets you explore key macro indicators alongside equity index performanc
    ```bash
    git clone https://github.com/<your-username>/macro-equity-dashboard.git
    cd macro-equity-dashboard
+
+2. Create and activate a virtual environment (optional but recommended):
+
+python -m venv .venv
+.venv\Scripts\activate   # Windows
+# source .venv/bin/activate  # macOS / Linux
+
+3. Install dependencies:
+
+pip install -r requirements.txt
+
+4. Launch the app:
+
+streamlit run app.py
