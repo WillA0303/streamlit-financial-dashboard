@@ -136,26 +136,40 @@ def _fallback_macro_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 
 @st.cache_data
+@st.cache_data
 def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     """
     Load CPI, unemployment and policy rate series for a country.
 
-    Tries live FRED data when available; falls back to local CSVs for the UK.
+    - UK always uses the bundled CSVs.
+    - Other countries try live FRED; if that fails, we fall back to UK CSV
+      but clearly label that this is a fallback.
     Returns (cpi_df, unemployment_df, rate_df, source_label).
     """
+    # UK: always use local CSVs (this is the only guaranteed data set right now)
+    if country == "United Kingdom":
+        cpi, unemp, base_rate = _fallback_macro_data()
+        return cpi, unemp, base_rate, "Local CSV (UK)"
+
+    # Other countries: try FRED
     if country in MACRO_SERIES:
         series_map = MACRO_SERIES[country]
-        try:
-            cpi = fetch_macro_series(series_map["cpi"], "CPI")
-            unemp = fetch_macro_series(series_map["unemployment"], "Unemployment")
-            base_rate = fetch_macro_series(series_map["rate"], "BaseRate")
-            return cpi, unemp, base_rate, "Live FRED"
-        except Exception:
-            # fall back to local data if available
-            pass
+       # Load macro
+try:
+    cpi_raw, unemp_raw, rate_raw, source_label = load_macro_data(country)
+    cpi, unemp = add_macro_features(cpi_raw, unemp_raw)
+    macro_state = infer_macro_state(cpi, unemp, rate_raw)
+    # Always pass the selected country into the heading
+    macro_summary = macro_summary_text(cpi, unemp, rate_raw, country, source_label)
+except Exception as e:
+    st.error(f"Error loading macro data: {e}")
+    st.stop()
 
+
+    # Absolute fallback
     cpi, unemp, base_rate = _fallback_macro_data()
-    return cpi, unemp, base_rate, "Local CSV fallback (UK)"
+    return cpi, unemp, base_rate, "Local CSV (UK)"
+
 
 
 def add_macro_features(
