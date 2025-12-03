@@ -492,6 +492,7 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
             latest = fin_kpis.iloc[-1]
 
             info = fin.get("info", {}) or {}
+
             rows.append(
                 {
                     "Ticker": t_clean,
@@ -505,7 +506,9 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
                     "ROE_Pct": latest.get("ROE_Pct", math.nan),
                     "Debt": latest.get("Debt", math.nan),
                     "DebtToEquity": latest.get("DebtToEquity", math.nan),
+                    "OperatingCashFlow": latest.get("OperatingCashFlow", math.nan),
                     "CashConversionPct": latest.get("CashConversionPct", math.nan),
+                    "Capex": latest.get("Capex", math.nan),
                     "CapexToRevenuePct": latest.get("CapexToRevenuePct", math.nan),
                 }
             )
