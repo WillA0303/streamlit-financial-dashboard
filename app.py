@@ -433,17 +433,23 @@ def load_company_financials(ticker: str) -> Dict[str, Any]:
 
     # Company info / metadata
     # Company info / metadata
+        # Company info / metadata
     try:
-        info = tk.get_info()
+        info = tk.info
     except Exception:
         info = {}
-    
-        return {
-            "ticker": ticker,
-            "info": info,
-            "income": income,
-            "balance": balance,
-            "cashflow": cashflow,
+    if not info:
+        try:
+            info = tk.get_info()
+        except Exception:
+            info = {}
+
+    return {
+        "ticker": ticker,
+        "info": info,
+        "income": income,
+        "balance": balance,
+        "cashflow": cashflow,
     }
 
 
@@ -730,23 +736,24 @@ def quick_dcf_value(
 
 
 def price_vs_macro(ticker: str, cpi_df: pd.DataFrame) -> pd.DataFrame:
+    # Download up to 10 years of daily prices
     price_hist = yf.download(ticker, period="10y", progress=False)
     if price_hist is None or len(price_hist) == 0:
         return pd.DataFrame()
 
-    # Robust selection of a price series
+    # Robust selection of a usable price series
     if isinstance(price_hist, pd.DataFrame):
         if "Adj Close" in price_hist.columns:
             prices = price_hist["Adj Close"]
         elif "Close" in price_hist.columns:
             prices = price_hist["Close"]
         else:
-            # No usable price column
-            return pd.DataFrame()
+            return pd.DataFrame()  # no usable price column
     else:
-        # If yfinance ever returns a Series, just use it as-is
+        # If a Series is returned for some reason, just use it directly
         prices = price_hist
 
+    # 12-month rolling price return in percent
     rolling_return = prices.pct_change(252) * 100
 
     # Align CPI YoY with business days
@@ -758,6 +765,7 @@ def price_vs_macro(ticker: str, cpi_df: pd.DataFrame) -> pd.DataFrame:
     ).dropna()
 
     return combined
+
 
 
 
@@ -786,6 +794,8 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
 
             # Robust info lookup for Sector / Country / Name
             info = fin.get("info") or {}
+            st.write("Info keys:", list(info.keys()))
+
             if not info:
                 # Fallback: query yfinance again specifically for metadata
                 try:
