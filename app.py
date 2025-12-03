@@ -136,9 +136,6 @@ def _fallback_macro_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 
 @st.cache_data
-@st.cache_data
-@st.cache_data
-@st.cache_data
 def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     """
     Load CPI, unemployment and policy rate series for a country.
