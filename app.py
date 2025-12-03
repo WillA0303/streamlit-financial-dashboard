@@ -924,7 +924,7 @@ with tab_single:
                 with perf_cols[0]:
                     st.markdown("**Revenue by year**")
                     st.bar_chart(fin_kpis["Revenue"])
-               with perf_cols[1]:
+                with perf_cols[1]:
                     st.markdown("**Net margin (%) by year**")
                     st.bar_chart(fin_kpis["NetMarginPct"])
                    
