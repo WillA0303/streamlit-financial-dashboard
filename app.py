@@ -248,6 +248,7 @@ def macro_summary_text(
     country: str,
     source: str,
 ) -> str:
+    # Basic validation
     for df in (cpi_df, unemp_df, rate_df):
         if df is None or df.empty:
             raise ValueError("Macro data is empty; cannot build summary")
@@ -258,18 +259,57 @@ def macro_summary_text(
         if len(series) == 1:
             return series.iloc[-1], series.iloc[-1]
         return math.nan, math.nan
-    
-    latest_idx = min(cpi_df.index[-1], unemp_df.index[-1], rate_df.index[-1])
+
+    # Use a common monthly index based on CPI and unemployment
+    latest_idx = min(cpi_df.index[-1], unemp_df.index[-1])
     latest_date = latest_idx.date()
 
-    latest_cpi, prev_cpi = latest_and_previous(cpi_df["CPI"])
+    # CPI (truncate to dates <= latest_idx)
+    cpi_series = cpi_df["CPI"].loc[:latest_idx]
+    latest_cpi, prev_cpi = latest_and_previous(cpi_series)
     latest_cpi_yoy = cpi_df["CPI_YoY"].loc[latest_idx]
 
-    latest_unemp, prev_unemp = latest_and_previous(unemp_df["Unemployment"])
+    # Unemployment (truncate to dates <= latest_idx)
+    unemp_series = unemp_df["Unemployment"].loc[:latest_idx]
+    latest_unemp, prev_unemp = latest_and_previous(unemp_series)
     latest_unemp_yoy = unemp_df["Unemployment_YoY"].loc[latest_idx]
 
-    latest_rate, prev_rate = latest_and_previous(rate_df["BaseRate"])
+    # Policy rate: use last two observations up to latest_idx
+    rate_series = rate_df["BaseRate"].loc[:latest_idx]
+    if len(rate_series) >= 2:
+        latest_rate = rate_series.iloc[-1]
+        prev_rate = rate_series.iloc[-2]
+    elif len(rate_series) == 1:
+        latest_rate = rate_series.iloc[-1]
+        prev_rate = latest_rate
+    else:
+        raise ValueError("No rate data available up to latest CPI/unemployment date")
     rate_change = latest_rate - prev_rate
+
+    def direction(latest: float, previous: float) -> str:
+        if latest > previous:
+            return "rising"
+        elif latest < previous:
+            return "falling"
+        else:
+            return "unchanged"
+
+    cpi_dir = direction(latest_cpi, prev_cpi)
+    unemp_dir = direction(latest_unemp, prev_unemp)
+    rate_dir = direction(latest_rate, prev_rate)
+
+    inflation_regime = classify_inflation(latest_cpi_yoy)
+    unemployment_regime = classify_unemployment(latest_unemp)
+
+    summary = f"""
+**{country} Macro Summary** (sample ending {latest_date} – {source})
+
+- CPI level: {latest_cpi:.2f} | YoY: {latest_cpi_yoy:.2f}% | Direction: {cpi_dir} | Regime: {inflation_regime}
+- Unemployment: {latest_unemp:.2f}% | YoY: {latest_unemp_yoy:.2f}% | Direction: {unemp_dir} | Regime: {unemployment_regime}
+- Policy rate: {latest_rate:.2f}% | Change vs last: {rate_change:+.2f} | Direction: {rate_dir}
+"""
+    return summary
+
 
     def direction(latest: float, previous: float) -> str:
         if latest > previous:
@@ -304,17 +344,23 @@ def infer_macro_state(
 ) -> Dict[str, Any]:
     if cpi_df.empty or unemp_df.empty or rate_df.empty:
         raise ValueError("Macro data missing for regime inference")
-    latest_idx = min(cpi_df.index[-1], unemp_df.index[-1], rate_df.index[-1])
+
+    # Work off the common monthly index
+    latest_idx = min(cpi_df.index[-1], unemp_df.index[-1])
 
     latest_cpi_yoy = cpi_df.loc[latest_idx, "CPI_YoY"]
     latest_unemp = unemp_df.loc[latest_idx, "Unemployment"]
 
-    if len(rate_df) >= 2:
-        latest_rate = rate_df["BaseRate"].iloc[-1]
-        prev_rate = rate_df["BaseRate"].iloc[-2]
-    else:
-        latest_rate = rate_df["BaseRate"].iloc[-1]
+    # Policy rate: align to latest_idx using last two observations up to that date
+    rate_series = rate_df["BaseRate"].loc[:latest_idx]
+    if len(rate_series) >= 2:
+        latest_rate = rate_series.iloc[-1]
+        prev_rate = rate_series.iloc[-2]
+    elif len(rate_series) == 1:
+        latest_rate = rate_series.iloc[-1]
         prev_rate = latest_rate
+    else:
+        raise ValueError("No rate data available up to latest CPI/unemployment date")
 
     if latest_rate > prev_rate:
         rate_direction = "rising"
@@ -324,14 +370,15 @@ def infer_macro_state(
         rate_direction = "flat"
 
     return {
-    "inflation_yoy": latest_cpi_yoy,
-    "unemployment": latest_unemp,
-    "rate_level": latest_rate,
-    "prev_rate": prev_rate,
-    "rate_direction": rate_direction,
-    "inflation_regime": classify_inflation(latest_cpi_yoy),
-    "unemployment_regime": classify_unemployment(latest_unemp),
-}
+        "inflation_yoy": latest_cpi_yoy,
+        "unemployment": latest_unemp,
+        "rate_level": latest_rate,
+        "prev_rate": prev_rate,
+        "rate_direction": rate_direction,
+        "inflation_regime": classify_inflation(latest_cpi_yoy),
+        "unemployment_regime": classify_unemployment(latest_unemp),
+    }
+
 
 
 
