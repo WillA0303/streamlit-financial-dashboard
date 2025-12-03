@@ -9,6 +9,7 @@ import math
 import pandas as pd
 import yfinance as yf
 import streamlit as st
+from pandas_datareader import data as pdr
 
 # -----------------------
 # Configuration
@@ -17,8 +18,26 @@ import streamlit as st
 PROJECT_ROOT = Path(__file__).resolve().parent
 MACRO_PATH = PROJECT_ROOT / "data" / "macro"
 
+MACRO_SERIES: Dict[str, Dict[str, str]] = {
+    "United States": {
+        "cpi": "CPIAUCSL",        # CPI for All Urban Consumers: All Items
+        "unemployment": "UNRATE", # Unemployment Rate
+        "rate": "FEDFUNDS",       # Effective Federal Funds Rate
+    },
+    "United Kingdom": {
+        "cpi": "GBRCPIALLMINMEI",   # CPI All Items
+        "unemployment": "LRHUTTTTGBQ156S",  # Harmonized unemployment rate
+        "rate": "BOEBASE",          # Bank of England Bank Rate
+    },
+    "Euro Area": {
+        "cpi": "CP0000EZ19M086NEST", # Euro Area CPI All Items
+        "unemployment": "LRHUTTTTEZM156S",  # Harmonized unemployment rate
+        "rate": "ECBDFR",            # ECB Deposit Facility Rate
+    },
+}
+
 # Global top 10 by market cap (mapped to yfinance tickers)
-PORTFOLIO_TICKERS = [
+PORTFOLIO_TICKERS: List[str] = [
     "NVDA",      # Nvidia
     "AAPL",      # Apple
     "GOOGL",     # Alphabet
@@ -30,7 +49,6 @@ PORTFOLIO_TICKERS = [
     "TSM",       # TSMC
     "TSLA",      # Tesla
 ]
-
 
 # -----------------------
 # Utility helpers
@@ -46,22 +64,17 @@ def _to_float(x: Any) -> float:
 
 
 def _find_row_label(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    labels = list(df.index)
-    lower_index = {str(idx).lower(): idx for idx in labels}
+    """Find the first row label in df.index that contains any of the candidate strings."""
+    if df is None or df.empty:
+        return None
+    labels = [str(idx) for idx in df.index]
+    lower_labels = [str(idx).lower() for idx in df.index]
 
-    # Exact match
     for cand in candidates:
         c = cand.lower()
-        if c in lower_index:
-            return lower_index[c]
-
-    # Substring match
-    for cand in candidates:
-        c = cand.lower()
-        for idx in labels:
-            if c in str(idx).lower():
-                return idx
-
+        for lbl, lower_lbl in zip(labels, lower_labels):
+            if c in lower_lbl:
+                return lbl
     return None
 
 
@@ -82,37 +95,53 @@ def _find_equity_label(bs_df: pd.DataFrame) -> Optional[str]:
 # Macro engine
 # -----------------------
 
-@st.cache_data
-def load_macro_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Load CPI, unemployment and base rate from CSVs in data/macro.
-    Each CSV must have columns: Date, Value.
-    """
-    cpi = pd.read_csv(MACRO_PATH / "cpi_uk.csv", parse_dates=["Date"])
-    cpi = (
-        cpi.rename(columns={"Value": "CPI"})
+def _load_from_csv(filename: str, column: str) -> pd.DataFrame:
+    df = pd.read_csv(MACRO_PATH / filename, parse_dates=["Date"])
+    df = (
+        df.rename(columns={"Value": column})
         .set_index("Date")
         .sort_index()
         .dropna()
     )
+    return df
 
-    unemp = pd.read_csv(MACRO_PATH / "unemployment_uk.csv", parse_dates=["Date"])
-    unemp = (
-        unemp.rename(columns={"Value": "Unemployment"})
-        .set_index("Date")
-        .sort_index()
-        .dropna()
-    )
 
-    base_rate = pd.read_csv(MACRO_PATH / "base_rate_uk.csv", parse_dates=["Date"])
-    base_rate = (
-        base_rate.rename(columns={"Value": "BaseRate"})
-        .set_index("Date")
-        .sort_index()
-        .dropna()
-    )
+def fetch_macro_series(series_id: str, name: str) -> pd.DataFrame:
+    """Fetch a single FRED series and return a Date-indexed DataFrame."""
+    series = pdr.DataReader(series_id, "fred")
+    series = series.rename(columns={series_id: name}).dropna().sort_index()
+    return series
 
+
+def _fallback_macro_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Use bundled CSVs as an offline fallback (UK only)."""
+    cpi = _load_from_csv("cpi_uk.csv", "CPI")
+    unemp = _load_from_csv("unemployment_uk.csv", "Unemployment")
+    base_rate = _load_from_csv("base_rate_uk.csv", "BaseRate")
     return cpi, unemp, base_rate
+
+
+@st.cache_data
+def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
+    """
+    Load CPI, unemployment and policy rate series for a country.
+
+    Tries live FRED data when available; falls back to local CSVs for the UK.
+    Returns (cpi_df, unemployment_df, rate_df, source_label).
+    """
+    if country in MACRO_SERIES:
+        series_map = MACRO_SERIES[country]
+        try:
+            cpi = fetch_macro_series(series_map["cpi"], "CPI")
+            unemp = fetch_macro_series(series_map["unemployment"], "Unemployment")
+            base_rate = fetch_macro_series(series_map["rate"], "BaseRate")
+            return cpi, unemp, base_rate, "Live FRED"
+        except Exception:
+            # fall back to local data if available
+            pass
+
+    cpi, unemp, base_rate = _fallback_macro_data()
+    return cpi, unemp, base_rate, "Local CSV fallback (UK)"
 
 
 def add_macro_features(
@@ -154,6 +183,8 @@ def macro_summary_text(
     cpi_df: pd.DataFrame,
     unemp_df: pd.DataFrame,
     rate_df: pd.DataFrame,
+    country: str,
+    source: str,
 ) -> str:
     latest_idx = min(cpi_df.index[-1], unemp_df.index[-1], rate_df.index[-1])
     latest_date = latest_idx.date()
@@ -183,19 +214,23 @@ def macro_summary_text(
     rate_dir = direction(latest_rate, prev_rate)
 
     inflation_regime = classify_inflation(latest_cpi_yoy)
-    unemployment_regime = classify_unemployment(latatest_unemp := latest_unemp)
+    unemployment_regime = classify_unemployment(latest_unemp)
 
     summary = f"""
-**UK Macro Summary** (sample ending {latest_date})
+**{country} Macro Summary** (sample ending {latest_date} – {source})
 
 - CPI level: {latest_cpi:.2f} | YoY: {latest_cpi_yoy:.2f}% | Direction: {cpi_dir} | Regime: {inflation_regime}
 - Unemployment: {latest_unemp:.2f}% | YoY: {latest_unemp_yoy:.2f}% | Direction: {unemp_dir} | Regime: {unemployment_regime}
-- Bank Rate: {latest_rate:.2f}% | Change vs last: {rate_change:+.2f} | Direction: {rate_dir}
+- Policy rate: {latest_rate:.2f}% | Change vs last: {rate_change:+.2f} | Direction: {rate_dir}
 """
     return summary
 
 
-def infer_macro_state(cpi_df, unemp_df, rate_df):
+def infer_macro_state(
+    cpi_df: pd.DataFrame,
+    unemp_df: pd.DataFrame,
+    rate_df: pd.DataFrame,
+) -> Dict[str, Any]:
     latest_idx = min(cpi_df.index[-1], unemp_df.index[-1], rate_df.index[-1])
 
     latest_cpi_yoy = cpi_df.loc[latest_idx, "CPI_YoY"]
@@ -212,263 +247,220 @@ def infer_macro_state(cpi_df, unemp_df, rate_df):
         rate_direction = "flat"
 
     return {
-        "as_of": latest_idx.date(),
+        "inflation_yoy": latest_cpi_yoy,
+        "unemployment": latest_unemp,
+        "rate_level": latest_rate,
+        "rate_direction": rate_direction,
         "inflation_regime": classify_inflation(latest_cpi_yoy),
         "unemployment_regime": classify_unemployment(latest_unemp),
-        "rate_direction": rate_direction,
     }
 
 
 # -----------------------
-# Equity engine
+# Company financials via yfinance
 # -----------------------
 
 @st.cache_data
-def load_company_financials(symbol: str, max_years: int = 5) -> pd.DataFrame:
-    """
-    Load multi-year financials for a company using yfinance.
+def load_company_financials(ticker: str) -> Dict[str, Any]:
+    tk = yf.Ticker(ticker)
 
-    Returns DataFrame indexed by Year with:
-        Revenue, COGS, OperatingIncome, NetIncome,
-        TotalAssets, TotalEquity, TotalDebt, CFO, Capex
-    """
-    t = yf.Ticker(symbol)
+    # Financial statements (annual)
+    income = tk.financials
+    balance = tk.balance_sheet
+    cashflow = tk.cashflow
 
-    is_df = t.financials
-    bs_df = t.balance_sheet
-    cf_df = t.cashflow
+    # Info
+    try:
+        info = tk.info
+    except Exception:
+        info = {}
+    if not info:
+        try:
+            info = tk.get_info()
+        except Exception:
+            info = {}
 
-    if is_df.empty or bs_df.empty or cf_df.empty:
-        raise ValueError(f"Missing financial data for ticker {symbol}")
+    return {
+        "ticker": ticker,
+        "info": info,
+        "income": income,
+        "balance": balance,
+        "cashflow": cashflow,
+    }
 
-    revenue_label = _find_row_label(is_df, ["Total Revenue", "Revenue"])
-    cogs_label = _find_row_label(is_df, ["Cost Of Revenue", "Cost of Revenue"])
-    op_inc_label = _find_row_label(is_df, ["Operating Income"])
-    net_inc_label = _find_row_label(is_df, ["Net Income"])
 
-    assets_label = _find_row_label(bs_df, ["Total Assets"])
-    equity_label = _find_equity_label(bs_df)
+def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
+    income = fin["income"]
+    balance = fin["balance"]
+    cashflow = fin["cashflow"]
 
-    total_debt_label = _find_row_label(bs_df, ["Total Debt"])
-    short_debt_label = _find_row_label(bs_df, ["Short Long Term Debt", "Short Term Debt"])
-    long_debt_label = _find_row_label(bs_df, ["Long Term Debt"])
+    if income is None or income.empty:
+        return pd.DataFrame()
 
-    cfo_label = _find_row_label(
-        cf_df,
-        ["Total Cash From Operating Activities", "Operating Cash Flow"],
+    # yfinance uses columns as periods (most recent first)
+    years = list(income.columns)
+
+    rev_label = _find_row_label(
+        income,
+        ["Total Revenue", "TotalRevenue", "Revenue", "Total net sales"],
+    )
+    ni_label = _find_row_label(
+        income,
+        ["Net Income", "NetIncome", "Net income applicable to common shares"],
+    )
+
+    eq_label = _find_equity_label(balance) if balance is not None and not balance.empty else None
+
+    debt_labels = [
+        "Total Debt",
+        "Long Term Debt",
+        "Long Term Debt And Capital Lease Obligation",
+        "Short Long Term Debt",
+        "Current Portion of Long Term Debt",
+    ]
+
+    ocf_label = _find_row_label(
+        cashflow,
+        [
+            "Total Cash From Operating Activities",
+            "NetCashProvidedByUsedInOperatingActivities",
+            "Operating Cash Flow",
+        ],
     )
     capex_label = _find_row_label(
-        cf_df,
-        ["Capital Expenditures", "Capital Expenditure"],
+        cashflow,
+        ["Capital Expenditures", "Purchase of property plant and equipment"],
     )
-
-    def get_from(df: pd.DataFrame, label: Optional[str], col) -> float:
-        if label is None:
-            return math.nan
-        if label in df.index and col in df.columns:
-            return _to_float(df.loc[label, col])
-        return math.nan
 
     rows: List[Dict[str, Any]] = []
 
-    for col in is_df.columns:
-        if hasattr(col, "year"):
-            year = int(col.year)
-            date_key = col
-        else:
-            year = int(str(col)[:4])
-            date_key = col
+    for col in years:
+        year_str = str(col)
 
-        revenue = get_from(is_df, revenue_label, date_key)
-        cogs = get_from(is_df, cogs_label, date_key)
-        op_inc = get_from(is_df, op_inc_label, date_key)
-        net_inc = get_from(is_df, net_inc_label, date_key)
+        rev = _to_float(income.loc[rev_label, col]) if rev_label in income.index else math.nan
+        ni = _to_float(income.loc[ni_label, col]) if ni_label in income.index else math.nan
 
-        total_assets = get_from(bs_df, assets_label, date_key)
-        total_equity = get_from(bs_df, equity_label, date_key)
+        eq = _to_float(balance.loc[eq_label, col]) if eq_label and eq_label in balance.index else math.nan
 
-        total_debt = get_from(bs_df, total_debt_label, date_key)
-        if math.isnan(total_debt):
-            short_debt = get_from(bs_df, short_debt_label, date_key)
-            long_debt = get_from(bs_df, long_debt_label, date_key)
-            if not math.isnan(short_debt) or not math.isnan(long_debt):
-                total_debt = 0.0
-                if not math.isnan(short_debt):
-                    total_debt += short_debt
-                if not math.isnan(long_debt):
-                    total_debt += long_debt
+        # Approximate debt as sum of available debt labels
+        debt = 0.0
+        if balance is not None and not balance.empty:
+            for dl in debt_labels:
+                if dl in balance.index:
+                    debt_val = _to_float(balance.loc[dl, col])
+                    if not math.isnan(debt_val):
+                        debt += debt_val
+        if debt == 0:
+            debt = math.nan
 
-        cfo = get_from(cf_df, cfo_label, date_key)
-        capex = get_from(cf_df, capex_label, date_key)
+        ocf = _to_float(cashflow.loc[ocf_label, col]) if ocf_label in cashflow.index else math.nan
+        capex = _to_float(cashflow.loc[capex_label, col]) if capex_label in cashflow.index else math.nan
+
+        net_margin = (ni / rev * 100) if rev not in (0, math.nan) and not math.isnan(rev) and not math.isnan(ni) else math.nan
+        roe = (ni / eq * 100) if eq not in (0, math.nan) and not math.isnan(eq) and not math.isnan(ni) else math.nan
+        debt_to_equity = (debt / eq) if eq not in (0, math.nan) and not math.isnan(eq) and not math.isnan(debt) else math.nan
+        cash_conv = (ocf / ni * 100) if ni not in (0, math.nan) and not math.isnan(ni) and not math.isnan(ocf) else math.nan
+        capex_to_rev = (capex / rev * 100) if rev not in (0, math.nan) and not math.isnan(rev) and not math.isnan(capex) else math.nan
 
         rows.append(
             {
-                "Year": year,
-                "Revenue": revenue,
-                "COGS": cogs,
-                "OperatingIncome": op_inc,
-                "NetIncome": net_inc,
-                "TotalAssets": total_assets,
-                "TotalEquity": total_equity,
-                "TotalDebt": total_debt,
-                "CFO": cfo,
+                "Year": year_str,
+                "Revenue": rev,
+                "NetIncome": ni,
+                "NetMarginPct": net_margin,
+                "Equity": eq,
+                "ROE_Pct": roe,
+                "Debt": debt,
+                "DebtToEquity": debt_to_equity,
+                "OperatingCashFlow": ocf,
+                "CashConversionPct": cash_conv,
                 "Capex": capex,
+                "CapexToRevenuePct": capex_to_rev,
             }
         )
 
-    fin = pd.DataFrame(rows)
-    fin = fin.dropna(subset=["Revenue"])
-    fin = fin.sort_values("Year").drop_duplicates(subset=["Year"], keep="last")
-
-    if len(fin) > max_years:
-        fin = fin.iloc[-max_years:]
-
-    fin = fin.set_index("Year").sort_index()
-
-    return fin
-
-
-def add_kpis(fin_df: pd.DataFrame) -> pd.DataFrame:
-    df = fin_df.copy()
-
-    df["RevenueGrowthPct"] = df["Revenue"].pct_change() * 100
-    df["GrossProfit"] = df["Revenue"] - df["COGS"]
-    df["GrossMarginPct"] = df["GrossProfit"] / df["Revenue"] * 100
-    df["OperatingMarginPct"] = df["OperatingIncome"] / df["Revenue"] * 100
-    df["NetMarginPct"] = df["NetIncome"] / df["Revenue"] * 100
-    df["ROA_Pct"] = df["NetIncome"] / df["TotalAssets"] * 100
-    df["ROE_Pct"] = df["NetIncome"] / df["TotalEquity"] * 100
-    df["DebtToEquity"] = df["TotalDebt"] / df["TotalEquity"]
-    df["CashConversionPct"] = df["CFO"] / df["NetIncome"] * 100
-    df["CapexToRevenuePct"] = df["Capex"] / df["Revenue"] * 100
-
+    df = pd.DataFrame(rows).set_index("Year").sort_index()
     return df
 
 
-def safe_number(x, fmt="{:,.0f}"):
-    return "N/A" if pd.isna(x) else fmt.format(x)
-
-
-def safe_pct(x, fmt="{:.1f}%"):
-    return "N/A" if pd.isna(x) else fmt.format(x)
-
-
 def equity_snapshot_text(ticker: str, fin_kpis: pd.DataFrame) -> str:
-    latest = fin_kpis.index.max()
-    row = fin_kpis.loc[latest]
+    latest = fin_kpis.iloc[-1]
 
-    txt = f"""
-**{ticker} – Equity Snapshot (Year {latest})**
+    rev = latest.get("Revenue", math.nan)
+    ni = latest.get("NetIncome", math.nan)
+    net_margin = latest.get("NetMarginPct", math.nan)
+    roe = latest.get("ROE_Pct", math.nan)
+    d_to_e = latest.get("DebtToEquity", math.nan)
+    cash_conv = latest.get("CashConversionPct", math.nan)
+    capex_rev = latest.get("CapexToRevenuePct", math.nan)
 
-Scale and growth:
-- Revenue: {safe_number(row['Revenue'])}
-- Revenue growth: {safe_pct(row['RevenueGrowthPct'])}
+    text = f"""
+**Equity snapshot for {ticker} (latest year in sample)**
 
-Profitability:
-- Gross margin: {safe_pct(row['GrossMarginPct'])}
-- Operating margin: {safe_pct(row['OperatingMarginPct'])}
-- Net margin: {safe_pct(row['NetMarginPct'])}
-
-Returns:
-- ROA: {safe_pct(row['ROA_Pct'])}
-- ROE: {safe_pct(row['ROE_Pct'])}
-
-Leverage:
-- Total Assets: {safe_number(row['TotalAssets'])}
-- Total Equity: {safe_number(row['TotalEquity'])}
-- Total Debt: {safe_number(row['TotalDebt'])}
-- Debt/Equity: {(
-    "N/A" if pd.isna(row['DebtToEquity']) else f"{row['DebtToEquity']:.2f}x"
-)}
-
-Cash:
-- Cash conversion: {safe_pct(row['CashConversionPct'])}
-- Capex intensity: {safe_pct(row['CapexToRevenuePct'])}
+- Revenue: {rev:,.0f}
+- Net income: {ni:,.0f}
+- Net margin: {net_margin:.2f}% 
+- ROE: {roe:.2f}%
+- Debt to equity: {d_to_e:.2f}
+- Cash conversion (OCF / NI): {cash_conv:.2f}%
+- Capex / revenue: {capex_rev:.2f}%
 """
-    return txt
-
-
-def combined_view_text(ticker: str, fin_kpis: pd.DataFrame, macro_state: Dict[str, Any]) -> str:
-    latest = fin_kpis.index.max()
-    row = fin_kpis.loc[latest]
-
-    inflation = macro_state["inflation_regime"]
-    unemployment = macro_state["unemployment_regime"]
-    rate_dir = macro_state["rate_direction"]
-    as_of = macro_state["as_of"]
-
-    d_e = row["DebtToEquity"]
-    gross_margin = row["GrossMarginPct"]
-    rev_growth = row["RevenueGrowthPct"]
-    roe = row["ROE_Pct"]
-
-    bullets = []
-
-    if rate_dir == "rising" and not pd.isna(d_e):
-        if d_e > 1.0:
-            bullets.append(
-                f"{ticker} has relatively high leverage ({d_e:.2f}x). Higher rates increase refinancing and interest cost risk."
-            )
-        elif d_e < 0.3:
-            bullets.append(
-                f"{ticker} has modest leverage ({d_e:.2f}x) so is less sensitive to higher rates."
-            )
-
-    if inflation == "elevated" and not pd.isna(gross_margin):
-        if gross_margin < 30:
-            bullets.append(
-                f"Elevated inflation and thin gross margins (~{gross_margin:.1f}%) leave limited room to absorb input cost shocks."
-            )
-        elif gross_margin > 50:
-            bullets.append(
-                f"Strong gross margins (~{gross_margin:.1f}%) give {ticker} pricing power even in an elevated inflation environment."
-            )
-
-    if not pd.isna(rev_growth) and not pd.isna(roe):
-        if rev_growth > 5 and roe > 15:
-            bullets.append(
-                f"Despite the macro backdrop (inflation: {inflation}, rates: {rate_dir}), {ticker} still delivers solid fundamentals: {rev_growth:.1f}% revenue growth and ROE of {roe:.1f}%."
-            )
-
-    if not bullets:
-        bullets.append(
-            f"Macro as of {as_of}: inflation '{inflation}', unemployment '{unemployment}', rates '{rate_dir}'. No strong simple macro warning flags in this rule set."
-        )
-
-    text = f"**{ticker} – Macro aware view (as of {as_of})**\n\n"
-    text += "\n".join(f"- {b}" for b in bullets)
     return text
 
 
-# -----------------------
-# Portfolio helpers
-# -----------------------
+def combined_view_text(ticker: str, fin_kpis: pd.DataFrame, macro_state: Dict[str, Any]) -> str:
+    latest = fin_kpis.iloc[-1]
 
-@st.cache_data
+    net_margin = latest.get("NetMarginPct", math.nan)
+    roe = latest.get("ROE_Pct", math.nan)
+
+    infl_reg = macro_state.get("inflation_regime", "unknown")
+    unemp_reg = macro_state.get("unemployment_regime", "unknown")
+    rate_dir = macro_state.get("rate_direction", "unknown")
+
+    text = f"""
+**Macro-aware view for {ticker}**
+
+- Profitability now: net margin {net_margin:.2f}%, ROE {roe:.2f}%.
+- Macro backdrop: inflation regime is **{infl_reg}**, unemployment is **{unemp_reg}**, policy rates are **{rate_dir}**.
+
+This is not a forecast, but a way to frame whether the current equity performance is happening in an easy or a tough macro environment.
+"""
+    return text
+
+
 def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[str, str]]]:
-    rows = []
+    rows: List[Dict[str, Any]] = []
     failures: List[Tuple[str, str]] = []
 
     for t in tickers:
         t_clean = t.upper().strip()
+        if not t_clean:
+            continue
         try:
             fin = load_company_financials(t_clean)
-            kpis = add_kpis(fin)
-            latest_year = kpis.index.max()
-            r = kpis.loc[latest_year]
+            fin_kpis = add_kpis(fin)
+            if fin_kpis.empty:
+                raise ValueError("No financial KPIs available")
 
+            latest = fin_kpis.iloc[-1]
+
+            info = fin.get("info", {}) or {}
             rows.append(
                 {
                     "Ticker": t_clean,
-                    "Year": latest_year,
-                    "Revenue": r["Revenue"],
-                    "RevenueGrowthPct": r["RevenueGrowthPct"],
-                    "NetMarginPct": r["NetMarginPct"],
-                    "ROA_Pct": r["ROA_Pct"],
-                    "ROE_Pct": r["ROE_Pct"],
-                    "DebtToEquity": r["DebtToEquity"],
-                    "CashConversionPct": r["CashConversionPct"],
-                    "CapexToRevenuePct": r["CapexToRevenuePct"],
+                    "Name": info.get("shortName") or info.get("longName") or t_clean,
+                    "Sector": info.get("sector", ""),
+                    "Country": info.get("country", ""),
+                    "Revenue": latest.get("Revenue", math.nan),
+                    "NetIncome": latest.get("NetIncome", math.nan),
+                    "NetMarginPct": latest.get("NetMarginPct", math.nan),
+                    "Equity": latest.get("Equity", math.nan),
+                    "ROE_Pct": latest.get("ROE_Pct", math.nan),
+                    "Debt": latest.get("Debt", math.nan),
+                    "DebtToEquity": latest.get("DebtToEquity", math.nan),
+                    "CashConversionPct": latest.get("CashConversionPct", math.nan),
+                    "CapexToRevenuePct": latest.get("CapexToRevenuePct", math.nan),
                 }
             )
         except Exception as e:
@@ -491,25 +483,36 @@ st.set_page_config(
 )
 
 st.title("Macro–Equity Dashboard")
-st.caption("UK macro context + global megacap fundamentals (live yfinance data).")
-
-# Load macro on app start
-try:
-    cpi_raw, unemp_raw, rate_raw = load_macro_data()
-    cpi, unemp = add_macro_features(cpi_raw, unemp_raw)
-    macro_state = infer_macro_state(cpi, unemp, rate_raw)
-    macro_summary = macro_summary_text(cpi, unemp, rate_raw)
-except Exception as e:
-    st.error(f"Error loading macro data: {e}")
-    st.stop()
+st.caption("Always-on macro context plus live yfinance fundamentals for megacaps and your own watchlist.")
 
 # Sidebar mode selection
 st.sidebar.header("Settings")
+
+country = st.sidebar.selectbox("Macro country", list(MACRO_SERIES.keys()), index=1)
 
 mode = st.sidebar.radio(
     "Mode",
     ["Portfolio (Top 10)", "Single company"],
 )
+
+default_selection = st.sidebar.multiselect(
+    "Pick firms to analyze (portfolio mode)", PORTFOLIO_TICKERS, default=PORTFOLIO_TICKERS
+)
+extra_tickers = st.sidebar.text_input(
+    "Extra tickers (comma separated)",
+    help="Add any additional yfinance tickers to include in the portfolio table.",
+)
+
+# Load macro
+try:
+    cpi_raw, unemp_raw, rate_raw, source_label = load_macro_data(country)
+    cpi, unemp = add_macro_features(cpi_raw, unemp_raw)
+    macro_state = infer_macro_state(cpi, unemp, rate_raw)
+    summary_country = country if "Live" in source_label else "United Kingdom (fallback)"
+    macro_summary = macro_summary_text(cpi, unemp, rate_raw, summary_country, source_label)
+except Exception as e:
+    st.error(f"Error loading macro data: {e}")
+    st.stop()
 
 # Macro overview at top
 st.subheader("Macro overview")
@@ -517,14 +520,14 @@ st.markdown(macro_summary)
 
 macro_cols = st.columns(3)
 with macro_cols[0]:
-    st.markdown("**CPI (last 24 obs)**")
-    st.line_chart(cpi.tail(24)["CPI"])
+    st.markdown("**CPI (last 36 observations)**")
+    st.line_chart(cpi.tail(36)[["CPI"]])
 with macro_cols[1]:
     st.markdown("**Unemployment (all)**")
-    st.line_chart(unemp["Unemployment"])
+    st.line_chart(unemp[["Unemployment"]])
 with macro_cols[2]:
-    st.markdown("**Bank Rate (all)**")
-    st.line_chart(rate_raw["BaseRate"])
+    st.markdown("**Policy rate (all)**")
+    st.line_chart(rate_raw[["BaseRate"]])
 
 st.markdown("---")
 
@@ -534,81 +537,28 @@ st.markdown("---")
 if mode == "Single company":
     st.subheader("Single company analysis")
 
-    default_ticker = "AAPL"
-    ticker_input = st.text_input("Ticker (yfinance symbol)", value=default_ticker).upper().strip()
+    preset = st.selectbox("Quick pick (top firms)", PORTFOLIO_TICKERS, index=1)
+    ticker_input = st.text_input(
+        "Ticker (yfinance symbol)",
+        value=preset,
+        help="Any ticker supported by yfinance",
+    ).upper().strip()
 
     if ticker_input:
         try:
             fin = load_company_financials(ticker_input)
             fin_kpis = add_kpis(fin)
 
-            st.markdown("### Financial KPIs (latest years)")
-            st.dataframe(fin_kpis.round(2))
+            if fin_kpis.empty:
+                st.error("No financial data available for this ticker.")
+            else:
+                st.markdown("### Financial KPIs (latest years)")
+                st.dataframe(fin_kpis.round(2))
 
-            st.markdown("### Equity snapshot")
-            st.markdown(equity_snapshot_text(ticker_input, fin_kpis))
+                st.markdown("### Equity snapshot")
+                st.markdown(equity_snapshot_text(ticker_input, fin_kpis))
 
-            st.markdown("### Macro aware view")
-            st.markdown(combined_view_text(ticker_input, fin_kpis, macro_state))
+                st.markdown("### Macro aware view")
+                st.markdown(combined_view_text(ticker_input, fin_kpis, macro_state))
 
-            # Simple charts
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**Revenue by year**")
-                st.bar_chart(fin_kpis["Revenue"])
-            with c2:
-                st.markdown("**Net margin (%) by year**")
-                st.bar_chart(fin_kpis["NetMarginPct"])
-
-        except Exception as e:
-            st.error(f"Could not load data for {ticker_input}: {e}")
-
-# -----------------------
-# Mode: Portfolio
-# -----------------------
-else:
-    st.subheader("Portfolio of top 10 global firms")
-
-    st.markdown(f"Default portfolio tickers: `{', '.join(PORTFOLIO_TICKERS)}`")
-
-    portfolio_df, failures = build_portfolio_table(PORTFOLIO_TICKERS)
-
-    if portfolio_df.empty:
-        st.error("Could not build portfolio table (no tickers succeeded).")
-    else:
-        st.markdown("### Portfolio fundamentals (latest year per company)")
-        st.dataframe(portfolio_df.round(2))
-
-        # Charts
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Revenue (latest year)**")
-            st.bar_chart(portfolio_df["Revenue"])
-        with c2:
-            st.markdown("**ROE (%) (latest year)**")
-            st.bar_chart(portfolio_df["ROE_Pct"])
-
-        c3, c4 = st.columns(2)
-        with c3:
-            st.markdown("**Net margin (%) (latest year)**")
-            st.bar_chart(portfolio_df["NetMarginPct"])
-        with c4:
-            st.markdown("**Debt to equity (latest year)**")
-            st.bar_chart(portfolio_df["DebtToEquity"])
-
-        if failures:
-            st.markdown("### Tickers with errors")
-            for t, msg in failures:
-                st.write(f"- {t}: {msg}")
-
-        st.markdown("---")
-        st.markdown("### Macro aware notes per company")
-        for t in portfolio_df.index:
-            try:
-                fin = load_company_financials(t)
-                kpis = add_kpis(fin)
-                note = combined_view_text(t, kpis, macro_state)
-                st.markdown(note)
-                st.markdown("---")
-            except Exception as e:
-                st.write(f"Error for {t}: {e}")
+                c1, c2 = st.colum
