@@ -846,6 +846,44 @@ country = st.sidebar.selectbox("Macro country", list(MACRO_SERIES.keys()), index
 horizon = st.sidebar.selectbox(
     "Macro horizon", list(CONFIG["macro_horizons"].keys()), index=1
 )
+with st.sidebar.expander("About this dashboard"):
+    st.markdown(
+        """
+This app combines macroeconomic indicators with live equity fundamentals to create 
+a simple, always-updated environment for evaluating companies in their current macro context.
+
+**Macro tab**
+- CPI, unemployment, and policy rates for the US, UK, and Euro Area  
+- Year-on-year inflation and unemployment dynamics  
+- Automatic regime classification (low/moderate/elevated inflation; low/normal/high unemployment)  
+- Horizon filter for short-term vs long-term views  
+- Downloadable CSV output
+
+**Single company tab**
+- yfinance financial statements (income, balance sheet, cash flow)  
+- Automatic calculation of KPIs (margins, ROE, leverage, cash conversion, capex intensity)  
+- Simple scenario-based DCF using growth, margin, and cost of equity sliders  
+- Macro-aware interpretation of the company’s latest fundamentals  
+- Price vs inflation chart over the last decade
+
+**Portfolio tab**
+- Multi-ticker fundamentals table for comparison  
+- Aggregated KPIs for a watchlist  
+- Quick visual comparisons across revenue, ROE, margins, and leverage  
+- CSV download for further analysis
+
+**Data sources**
+- FRED (US macro), ONS (UK inflation & unemployment), Bank of England (Bank Rate)  
+- yfinance (equity fundamentals)  
+- Local CSV data for extended UK history
+
+**Purpose**
+This dashboard is designed as a practical, lightweight research tool and a demonstration
+of how macro and company-level data can be combined in a single analytical interface.
+It is informative rather than predictive.
+"""
+    )
+
 try:
     cpi_raw, unemp_raw, rate_raw, source_label = load_macro_data(country)
     cpi, unemp = add_macro_features(cpi_raw, unemp_raw)
