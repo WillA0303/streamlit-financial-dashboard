@@ -343,52 +343,93 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
     balance = fin["balance"]
     cashflow = fin["cashflow"]
 
+    # If no income statement, we cannot build KPIs
     if income is None or income.empty:
         return pd.DataFrame()
 
     years = list(income.columns)
 
+    # Revenue and Net income labels
     rev_label = _find_row_label(
         income,
-        ["Total Revenue", "TotalRevenue", "Revenue", "Total net sales"],
+        [
+            "Total Revenue",
+            "TotalRevenue",
+            "Revenue",
+            "Total net sales",
+            "Total operating revenues",
+        ],
     )
     ni_label = _find_row_label(
         income,
-        ["Net Income", "NetIncome", "Net income applicable to common shares"],
+        [
+            "Net Income",
+            "NetIncome",
+            "Net income applicable to common shares",
+            "Net income available to common stockholders",
+        ],
     )
+
+    # Equity label (balance sheet)
     eq_label = _find_equity_label(balance) if balance is not None and not balance.empty else None
 
+    # Debt labels (balance sheet)
     debt_labels = [
         "Total Debt",
         "Long Term Debt",
         "Long Term Debt And Capital Lease Obligation",
         "Short Long Term Debt",
         "Current Portion of Long Term Debt",
+        "Short-term borrowings",
+        "Current debt",
+        "Long-term debt",
     ]
 
-    ocf_label = _find_row_label(
-        cashflow,
-        [
-            "Total Cash From Operating Activities",
-            "NetCashProvidedByUsedInOperatingActivities",
-            "Operating Cash Flow",
-        ],
-    )
-    capex_label = _find_row_label(
-        cashflow,
-        ["Capital Expenditures", "Purchase of property plant and equipment"],
-    )
+    # Operating cash flow and Capex labels (cashflow)
+    if cashflow is not None and not cashflow.empty:
+        ocf_label = _find_row_label(
+            cashflow,
+            [
+                "Total Cash From Operating Activities",
+                "NetCashProvidedByUsedInOperatingActivities",
+                "Net cash provided by operating activities",
+                "Net cash provided by (used in) operating activities",
+                "Operating Cash Flow",
+            ],
+        )
+        capex_label = _find_row_label(
+            cashflow,
+            [
+                "Capital Expenditures",
+                "Capital expenditure",
+                "Capital expenditures",
+                "Purchase of property plant and equipment",
+                "Purchase of property, plant and equipment",
+                "Purchase of property and equipment",
+                "Purchase of fixed assets",
+                "Additions to property plant and equipment",
+            ],
+        )
+    else:
+        ocf_label = None
+        capex_label = None
 
     rows: List[Dict[str, Any]] = []
 
     for col in years:
         year_str = str(col)
 
+        # Revenue and net income
         rev = _to_float(income.loc[rev_label, col]) if rev_label in income.index else math.nan
         ni = _to_float(income.loc[ni_label, col]) if ni_label in income.index else math.nan
 
-        eq = _to_float(balance.loc[eq_label, col]) if eq_label and eq_label in balance.index else math.nan
+        # Equity
+        if balance is not None and not balance.empty and eq_label and eq_label in balance.index:
+            eq = _to_float(balance.loc[eq_label, col])
+        else:
+            eq = math.nan
 
+        # Debt (sum of any available debt rows)
         debt = 0.0
         if balance is not None and not balance.empty:
             for dl in debt_labels:
@@ -399,14 +440,44 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
         if debt == 0:
             debt = math.nan
 
-        ocf = _to_float(cashflow.loc[ocf_label, col]) if ocf_label in cashflow.index else math.nan
-        capex = _to_float(cashflow.loc[capex_label, col]) if capex_label in cashflow.index else math.nan
+        # Operating cash flow
+        if cashflow is not None and not cashflow.empty and ocf_label and ocf_label in cashflow.index:
+            ocf = _to_float(cashflow.loc[ocf_label, col])
+        else:
+            ocf = math.nan
 
-        net_margin = (ni / rev * 100) if rev not in (0, math.nan) and not math.isnan(rev) and not math.isnan(ni) else math.nan
-        roe = (ni / eq * 100) if eq not in (0, math.nan) and not math.isnan(eq) and not math.isnan(ni) else math.nan
-        debt_to_equity = (debt / eq) if eq not in (0, math.nan) and not math.isnan(eq) and not math.isnan(debt) else math.nan
-        cash_conv = (ocf / ni * 100) if ni not in (0, math.nan) and not math.isnan(ni) and not math.isnan(ocf) else math.nan
-        capex_to_rev = (capex / rev * 100) if rev not in (0, math.nan) and not math.isnan(rev) and not math.isnan(capex) else math.nan
+        # Capex
+        if cashflow is not None and not cashflow.empty and capex_label and capex_label in cashflow.index:
+            capex = _to_float(cashflow.loc[capex_label, col])
+        else:
+            capex = math.nan
+
+        # Ratios
+        net_margin = (
+            ni / rev * 100
+            if rev not in (0, math.nan) and not math.isnan(rev) and not math.isnan(ni)
+            else math.nan
+        )
+        roe = (
+            ni / eq * 100
+            if eq not in (0, math.nan) and not math.isnan(eq) and not math.isnan(ni)
+            else math.nan
+        )
+        debt_to_equity = (
+            debt / eq
+            if eq not in (0, math.nan) and not math.isnan(eq) and not math.isnan(debt)
+            else math.nan
+        )
+        cash_conv = (
+            ocf / ni * 100
+            if ni not in (0, math.nan) and not math.isnan(ni) and not math.isnan(ocf)
+            else math.nan
+        )
+        capex_to_rev = (
+            capex / rev * 100
+            if rev not in (0, math.nan) and not math.isnan(rev) and not math.isnan(capex)
+            else math.nan
+        )
 
         rows.append(
             {
@@ -427,6 +498,7 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
 
     df = pd.DataFrame(rows).set_index("Year").sort_index()
     return df
+
 
 
 def equity_snapshot_text(ticker: str, fin_kpis: pd.DataFrame) -> str:
