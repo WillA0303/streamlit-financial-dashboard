@@ -240,6 +240,7 @@ def macro_summary_text(
     return summary
 
 
+
 def infer_macro_state(
     cpi_df: pd.DataFrame,
     unemp_df: pd.DataFrame,
