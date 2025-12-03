@@ -324,13 +324,15 @@ def infer_macro_state(
         rate_direction = "flat"
 
     return {
-        "inflation_yoy": latest_cpi_yoy,
-        "unemployment": latest_unemp,
-        "rate_level": latest_rate,
-        "rate_direction": rate_direction,
-        "inflation_regime": classify_inflation(latest_cpi_yoy),
-        "unemployment_regime": classify_unemployment(latest_unemp),
-    }
+    "inflation_yoy": latest_cpi_yoy,
+    "unemployment": latest_unemp,
+    "rate_level": latest_rate,
+    "prev_rate": prev_rate,
+    "rate_direction": rate_direction,
+    "inflation_regime": classify_inflation(latest_cpi_yoy),
+    "unemployment_regime": classify_unemployment(latest_unemp),
+}
+
 
 
 # -----------------------
@@ -836,11 +838,13 @@ with tab_macro:
         macro_state["unemployment_regime"],
         f"Level {macro_state['unemployment']:.2f}%",
     )
-    regime_cols[2].metric(
-        "Rate direction",
-        macro_state["rate_direction"],
-        f"Latest {macro_state['rate_level']:.2f}%",
-    )
+    rate_delta = macro_state["rate_level"] - macro_state["prev_rate"]
+
+regime_cols[2].metric(
+    "Rate direction",
+    macro_state["rate_direction"],
+    delta=f"{rate_delta:+.2f}%",
+)
 
     st.markdown(macro_summary)
 
