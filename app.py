@@ -138,6 +138,7 @@ def _fallback_macro_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 @st.cache_data
 @st.cache_data
 @st.cache_data
+@st.cache_data
 def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     """
     Load CPI, unemployment and policy rate series for a country.
@@ -149,7 +150,7 @@ def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     Returns (cpi_df, unemployment_df, rate_df, source_label).
     """
 
-    # UK: always use local CSVs
+    # UK: always use local CSV files
     if country == "United Kingdom":
         cpi, unemp, base_rate = _fallback_macro_data()
         return cpi, unemp, base_rate, "Local CSV (UK)"
@@ -161,26 +162,16 @@ def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
             cpi = fetch_macro_series(series_map["cpi"], "CPI")
             unemp = fetch_macro_series(series_map["unemployment"], "Unemployment")
             base_rate = fetch_macro_series(series_map["rate"], "BaseRate")
-            return cpi, un
-
-    # Other countries: try FRED
-    if country in MACRO_SERIES:
-        series_map = MACRO_SERIES[country]
-       # Load macro
-try:
-    cpi_raw, unemp_raw, rate_raw, source_label = load_macro_data(country)
-    cpi, unemp = add_macro_features(cpi_raw, unemp_raw)
-    macro_state = infer_macro_state(cpi, unemp, rate_raw)
-    # Always pass the selected country into the heading
-    macro_summary = macro_summary_text(cpi, unemp, rate_raw, country, source_label)
-except Exception as e:
-    st.error(f"Error loading macro data: {e}")
-    st.stop()
-
+            return cpi, unemp, base_rate, "Live FRED"
+        except Exception:
+            # FRED failed — use UK fallback but label clearly
+            cpi, unemp, base_rate = _fallback_macro_data()
+            return cpi, unemp, base_rate, f"UK CSV fallback used for {country}"
 
     # Absolute fallback
     cpi, unemp, base_rate = _fallback_macro_data()
     return cpi, unemp, base_rate, "Local CSV (UK)"
+
 
 
 
