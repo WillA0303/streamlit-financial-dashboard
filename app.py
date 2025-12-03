@@ -561,4 +561,60 @@ if mode == "Single company":
                 st.markdown("### Macro aware view")
                 st.markdown(combined_view_text(ticker_input, fin_kpis, macro_state))
 
-                c1, c2 = st.colum
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("**Revenue by year**")
+                    st.bar_chart(fin_kpis["Revenue"])
+                with c2:
+                    st.markdown("**Net margin (%) by year**")
+                    st.bar_chart(fin_kpis["NetMarginPct"])
+
+        except Exception as e:
+            st.error(f"Could not load data for {ticker_input}: {e}")
+
+# -----------------------
+# Mode: Portfolio
+# -----------------------
+else:
+    st.subheader("Portfolio view")
+
+    tickers = [t.upper().strip() for t in default_selection if t.strip()]
+    if extra_tickers:
+        tickers.extend([t.strip().upper() for t in extra_tickers.split(",") if t.strip()])
+
+    tickers = sorted(set(tickers))
+
+    if not tickers:
+        st.warning("Please choose at least one ticker to build the portfolio table.")
+        st.stop()
+
+    st.markdown(f"Default portfolio tickers: `{', '.join(PORTFOLIO_TICKERS)}`")
+    st.markdown(f"Active portfolio tickers ({len(tickers)}): `{', '.join(tickers)}`")
+
+    portfolio_df, failures = build_portfolio_table(tickers)
+
+    if portfolio_df.empty:
+        st.error("Could not build portfolio table (no tickers succeeded).")
+    else:
+        st.markdown("### Portfolio fundamentals (latest year per company)")
+        st.dataframe(portfolio_df.round(2))
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Revenue (latest year)**")
+            st.bar_chart(portfolio_df["Revenue"])
+        with c2:
+            st.markdown("**ROE (%) (latest year)**")
+            st.bar_chart(portfolio_df["ROE_Pct"])
+
+        c3, c4 = st.columns(2)
+        with c3:
+            st.markdown("**Net margin (%) (latest year)**")
+            st.bar_chart(portfolio_df["NetMarginPct"])
+        with c4:
+            st.markdown("**Debt to equity (latest year)**")
+            st.bar_chart(portfolio_df["DebtToEquity"])
+
+        if failures:
+            fail_str = ", ".join([f"{t} ({msg})" for t, msg in failures])
+            st.warning(f"Some tickers failed to load: {fail_str}")
