@@ -9,7 +9,7 @@ import math
 import pandas as pd
 import yfinance as yf
 import streamlit as st
-from pandas_datareader import data as pdr
+import requests
 
 # -----------------------
 # Configuration
@@ -25,14 +25,14 @@ MACRO_SERIES: Dict[str, Dict[str, str]] = {
         "rate": "FEDFUNDS",       # Effective Federal Funds Rate
     },
     "United Kingdom": {
-        "cpi": "GBRCPIALLMINMEI",   # CPI All Items
+        "cpi": "GBRCPIALLMINMEI",     # CPI All Items
         "unemployment": "LRHUTTTTGBQ156S",  # Harmonized unemployment rate
-        "rate": "BOEBASE",          # Bank of England Bank Rate
+        "rate": "BOEBASE",            # Bank of England Bank Rate
     },
     "Euro Area": {
-        "cpi": "CP0000EZ19M086NEST", # Euro Area CPI All Items
+        "cpi": "CP0000EZ19M086NEST",  # Euro Area CPI All Items
         "unemployment": "LRHUTTTTEZM156S",  # Harmonized unemployment rate
-        "rate": "ECBDFR",            # ECB Deposit Facility Rate
+        "rate": "ECBDFR",             # ECB Deposit Facility Rate
     },
 }
 
@@ -107,10 +107,24 @@ def _load_from_csv(filename: str, column: str) -> pd.DataFrame:
 
 
 def fetch_macro_series(series_id: str, name: str) -> pd.DataFrame:
-    """Fetch a single FRED series and return a Date-indexed DataFrame."""
-    series = pdr.DataReader(series_id, "fred")
-    series = series.rename(columns={series_id: name}).dropna().sort_index()
-    return series
+    """
+    Fetch a single FRED series by downloading its CSV directly.
+
+    Uses the public FRED CSV endpoint:
+    https://fred.stlouisfed.org/graph/fredgraph.csv?id=SERIES_ID
+    """
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+
+    df = pd.read_csv(pd.compat.StringIO(resp.text), parse_dates=["DATE"])
+    df = (
+        df.rename(columns={"DATE": "Date", series_id: name})
+        .set_index("Date")
+        .sort_index()
+        .dropna()
+    )
+    return df
 
 
 def _fallback_macro_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -297,7 +311,6 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
     if income is None or income.empty:
         return pd.DataFrame()
 
-    # yfinance uses columns as periods (most recent first)
     years = list(income.columns)
 
     rev_label = _find_row_label(
@@ -308,7 +321,6 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
         income,
         ["Net Income", "NetIncome", "Net income applicable to common shares"],
     )
-
     eq_label = _find_equity_label(balance) if balance is not None and not balance.empty else None
 
     debt_labels = [
@@ -342,7 +354,6 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
 
         eq = _to_float(balance.loc[eq_label, col]) if eq_label and eq_label in balance.index else math.nan
 
-        # Approximate debt as sum of available debt labels
         debt = 0.0
         if balance is not None and not balance.empty:
             for dl in debt_labels:
