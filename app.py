@@ -970,7 +970,7 @@ with tab_single:
     cost_equity = st.slider("Cost of equity (%)", min_value=2.0, max_value=20.0, value=8.0, step=0.5)
 
 
-    if ticker_input:
+if ticker_input:
     try:
         fin = load_company_financials(ticker_input)
     except Exception as e:
