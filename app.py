@@ -430,7 +430,12 @@ def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
 
 
 def equity_snapshot_text(ticker: str, fin_kpis: pd.DataFrame) -> str:
-    latest = fin_kpis.iloc[-1]
+    # Prefer the latest year where CapexToRevenuePct is available; otherwise use the last row
+    if "CapexToRevenuePct" in fin_kpis.columns:
+        non_nan = fin_kpis.dropna(subset=["CapexToRevenuePct"], how="all")
+        latest = non_nan.iloc[-1] if not non_nan.empty else fin_kpis.iloc[-1]
+    else:
+        latest = fin_kpis.iloc[-1]
 
     rev = latest.get("Revenue", math.nan)
     ni = latest.get("NetIncome", math.nan)
@@ -441,7 +446,7 @@ def equity_snapshot_text(ticker: str, fin_kpis: pd.DataFrame) -> str:
     capex_rev = latest.get("CapexToRevenuePct", math.nan)
 
     text = f"""
-**Equity snapshot for {ticker} (latest year in sample)**
+**Equity snapshot for {ticker} (latest usable year in sample)**
 
 - Revenue: {rev:,.0f}
 - Net income: {ni:,.0f}
@@ -452,6 +457,7 @@ def equity_snapshot_text(ticker: str, fin_kpis: pd.DataFrame) -> str:
 - Capex / revenue: {capex_rev:.2f}%
 """
     return text
+
 
 
 def combined_view_text(ticker: str, fin_kpis: pd.DataFrame, macro_state: Dict[str, Any]) -> str:
@@ -489,7 +495,13 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
             if fin_kpis.empty:
                 raise ValueError("No financial KPIs available")
 
-            latest = fin_kpis.iloc[-1]
+            # Prefer the latest year where CapexToRevenuePct is available; otherwise use the last row
+            if "CapexToRevenuePct" in fin_kpis.columns:
+                non_nan = fin_kpis.dropna(subset=["CapexToRevenuePct"], how="all")
+                latest = non_nan.iloc[-1] if not non_nan.empty else fin_kpis.iloc[-1]
+            else:
+                latest = fin_kpis.iloc[-1]
+
             info = fin.get("info", {}) or {}
 
             row = {
@@ -516,7 +528,6 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
     df = pd.DataFrame(rows)
 
     if not df.empty:
-        # Ensure all desired columns exist, even if some rows did not have them
         desired_cols = [
             "Name",
             "Sector",
@@ -537,11 +548,11 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
             if c not in df.columns:
                 df[c] = math.nan
 
-        # Set index and enforce column order
         df = df.set_index("Ticker")
         df = df[desired_cols]
 
     return df, failures
+
 
 
 
