@@ -248,7 +248,7 @@ def macro_summary_text(
     country: str,
     source: str,
 ) -> str:
-for df in (cpi_df, unemp_df, rate_df):
+    for df in (cpi_df, unemp_df, rate_df):
         if df is None or df.empty:
             raise ValueError("Macro data is empty; cannot build summary")
 
