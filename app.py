@@ -831,22 +831,21 @@ with tab_macro:
     regime_cols[0].metric(
         "Inflation regime",
         macro_state["inflation_regime"],
-        f"YoY {macro_state['inflation_yoy']:.2f}%",
+        f"YoY {macro_state['inflation_yoy']:.2f}%"
     )
     regime_cols[1].metric(
         "Unemployment regime",
         macro_state["unemployment_regime"],
-        f"Level {macro_state['unemployment']:.2f}%",
+        f"Level {macro_state['unemployment']:.2f}%"
     )
-    rate_delta = macro_state["rate_level"] - macro_state["prev_rate"]
-
-regime_cols[2].metric(
-    "Rate direction",
-    macro_state["rate_direction"],
-    delta=f"{rate_delta:+.2f}%",
-)
+    regime_cols[2].metric(
+        "Rate direction",
+        macro_state["rate_direction"],
+        delta=f"{macro_state['rate_level'] - macro_state['prev_rate']:+.2f}%"
+    )
 
     st.markdown(macro_summary)
+
 
     macro_cols = st.columns(3)
     with macro_cols[0]:
