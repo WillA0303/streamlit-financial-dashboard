@@ -390,50 +390,9 @@ def infer_macro_state(
 def load_company_financials(ticker: str) -> Dict[str, Any]:
     tk = yf.Ticker(ticker)
 
-    def _safe_df_attr(attr_name: str) -> pd.DataFrame:
-        try:
-            obj = getattr(tk, attr_name)
-        except Exception:
-            return pd.DataFrame()
-        if obj is None:
-            return pd.DataFrame()
-        if isinstance(obj, pd.DataFrame) and obj.empty:
-            return pd.DataFrame()
-        return obj
-
-    def _safe_df_call(method_name: str) -> pd.DataFrame:
-        try:
-            method = getattr(tk, method_name)
-        except Exception:
-            return pd.DataFrame()
-        try:
-            df = method()
-        except Exception:
-            return pd.DataFrame()
-        if df is None or (isinstance(df, pd.DataFrame) and df.empty):
-            return pd.DataFrame()
-        return df
-
-    # Income statement (annual)
-    income = _safe_df_attr("financials")
-    if income.empty:
-        income = _safe_df_attr("income_stmt")
-    if income.empty:
-        income = _safe_df_call("get_financials")
-
-    # Balance sheet (annual)
-    balance = _safe_df_attr("balance_sheet")
-    if balance.empty:
-        balance = _safe_df_call("get_balance_sheet")
-
-    # Cash flow statement (annual)
-    cashflow = _safe_df_attr("cashflow")
-    if cashflow.empty:
-        cashflow = _safe_df_call("get_cashflow")
+    # ... your existing income / balance / cashflow logic ...
 
     # Company info / metadata
-    # Company info / metadata
-        # Company info / metadata
     try:
         info = tk.info
     except Exception:
@@ -444,13 +403,23 @@ def load_company_financials(ticker: str) -> Dict[str, Any]:
         except Exception:
             info = {}
 
+    # Try fast_info as a separate dict (may or may not be populated)
+    try:
+        fast_info = tk.fast_info
+        if fast_info is None:
+            fast_info = {}
+    except Exception:
+        fast_info = {}
+
     return {
         "ticker": ticker,
         "info": info,
+        "fast_info": fast_info,
         "income": income,
         "balance": balance,
         "cashflow": cashflow,
     }
+
 
 
 def add_kpis(fin: Dict[str, Any]) -> pd.DataFrame:
