@@ -1,4 +1,4 @@
-##############################################
+  ##############################################
 # app.py – Macro–Equity Dashboard (Streamlit)
 ##############################################
 
@@ -987,15 +987,34 @@ if ticker_input:
             st.markdown("### Financial KPIs (latest years)")
             st.dataframe(fin_kpis.round(2))
 
-            # robust valuation metrics (from step 2)
-            def fmt_number(...):
-                ...
-            val_cols = st.columns(4)
-            ...
+            # robust, safe formatter
+            def fmt_number(x, fmt: str, fallback: str = "N/A") -> str:
+                try:
+                    if x is None:
+                        return fallback
+                    if isinstance(x, float) and math.isnan(x):
+                        return fallback
+                    return format(x, fmt)
+                except Exception:
+                    return fallback
 
+            # valuation metrics
+            val_cols = st.columns(4)
+            val_cols[0].metric("Market cap", fmt_number(valuations.get("MarketCap"), ",.0f"))
+            val_cols[1].metric("Trailing PE", fmt_number(valuations.get("TrailingPE"), ".2f"))
+            val_cols[2].metric("PB", fmt_number(valuations.get("PriceToBook"), ".2f"))
+            val_cols[3].metric("FCF yield (%)", fmt_number(valuations.get("FCF_YieldPct"), ".2f"))
+
+            # DCF block
             dcf_result = quick_dcf_value(fin_kpis, info, growth, margin, cost_equity)
             if dcf_result:
-                ...
+                st.markdown("### Simple one-period DCF scenario")
+                dcf_cols = st.columns(3)
+                dcf_cols[0].metric("Forward revenue", f"{dcf_result['forward_revenue']:,.0f}")
+                dcf_cols[1].metric("Forward income", f"{dcf_result['forward_income']:,.0f}")
+                dcf_cols[2].metric("Equity value", f"{dcf_result['equity_value']:,.0f}")
+                if not math.isnan(dcf_result.get("per_share_value", math.nan)):
+                    st.info(f"Implied value per share: {dcf_result['per_share_value']:.2f}")
             else:
                 st.info("Adjust the sliders to compute a quick DCF view.")
 
@@ -1015,58 +1034,6 @@ if ticker_input:
             except Exception as e:
                 st.warning(f"Could not load price vs macro chart: {e}")
 
-def fmt_number(x, fmt: str, fallback: str = "N/A") -> str:
-    try:
-        if x is None:
-            return fallback
-        if isinstance(x, float) and math.isnan(x):
-            return fallback
-        return format(x, fmt)
-    except Exception:
-        return fallback
-
-val_cols = st.columns(4)
-val_cols[0].metric("Market cap", fmt_number(valuations.get("MarketCap"), ",.0f"))
-val_cols[1].metric("Trailing PE", fmt_number(valuations.get("TrailingPE"), ".2f"))
-val_cols[2].metric("PB", fmt_number(valuations.get("PriceToBook"), ".2f"))
-val_cols[3].metric("FCF yield (%)", fmt_number(valuations.get("FCF_YieldPct"), ".2f"))
-
-
-                dcf_result = quick_dcf_value(fin_kpis, info, growth, margin, cost_equity)
-                if dcf_result:
-                    st.markdown("### Simple one-period DCF scenario")
-                    dcf_cols = st.columns(3)
-                    dcf_cols[0].metric("Forward revenue", f"{dcf_result['forward_revenue']:,.0f}")
-                    dcf_cols[1].metric("Forward income", f"{dcf_result['forward_income']:,.0f}")
-                    dcf_cols[2].metric("Equity value", f"{dcf_result['equity_value']:,.0f}")
-                    if not math.isnan(dcf_result.get("per_share_value", math.nan)):
-                        st.info(f"Implied value per share: {dcf_result['per_share_value']:.2f}")
-                else:
-                    st.info("Adjust the sliders to compute a quick DCF view.")
-
-                st.markdown("### Equity snapshot")
-                st.markdown(equity_snapshot_text(ticker_input, fin_kpis))
-
-                st.markdown("### Macro aware view")
-                st.markdown(combined_view_text(ticker_input, fin_kpis, macro_state))
-
-                perf_cols = st.columns(2)
-                with perf_cols[0]:
-                    st.markdown("**Revenue by year**")
-                    st.bar_chart(fin_kpis["Revenue"])
-                with perf_cols[1]:
-                    st.markdown("**Net margin (%) by year**")
-                    st.bar_chart(fin_kpis["NetMarginPct"])
-                   
-                st.markdown("### Relative performance vs macro")
-                price_macro = price_vs_macro(ticker_input, cpi)
-                if price_macro.empty:
-                    st.info("Not enough price history to plot performance vs macro.")
-                else:
-                    st.line_chart(price_macro)
-
-        except Exception as e:
-            st.error(f"Could not load data for {ticker_input}: {e}")
 
 with tab_portfolio:
     st.subheader("Portfolio view")
