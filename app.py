@@ -490,36 +490,59 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
                 raise ValueError("No financial KPIs available")
 
             latest = fin_kpis.iloc[-1]
-
             info = fin.get("info", {}) or {}
 
-            rows.append(
-                {
-                    "Ticker": t_clean,
-                    "Name": info.get("shortName") or info.get("longName") or t_clean,
-                    "Sector": info.get("sector", ""),
-                    "Country": info.get("country", ""),
-                    "Revenue": latest.get("Revenue", math.nan),
-                    "NetIncome": latest.get("NetIncome", math.nan),
-                    "NetMarginPct": latest.get("NetMarginPct", math.nan),
-                    "Equity": latest.get("Equity", math.nan),
-                    "ROE_Pct": latest.get("ROE_Pct", math.nan),
-                    "Debt": latest.get("Debt", math.nan),
-                    "DebtToEquity": latest.get("DebtToEquity", math.nan),
-                    "OperatingCashFlow": latest.get("OperatingCashFlow", math.nan),
-                    "CashConversionPct": latest.get("CashConversionPct", math.nan),
-                    "Capex": latest.get("Capex", math.nan),
-                    "CapexToRevenuePct": latest.get("CapexToRevenuePct", math.nan),
-                }
-            )
+            row = {
+                "Ticker": t_clean,
+                "Name": info.get("shortName") or info.get("longName") or t_clean,
+                "Sector": info.get("sector", ""),
+                "Country": info.get("country", ""),
+                "Revenue": latest.get("Revenue", math.nan),
+                "NetIncome": latest.get("NetIncome", math.nan),
+                "NetMarginPct": latest.get("NetMarginPct", math.nan),
+                "Equity": latest.get("Equity", math.nan),
+                "ROE_Pct": latest.get("ROE_Pct", math.nan),
+                "Debt": latest.get("Debt", math.nan),
+                "DebtToEquity": latest.get("DebtToEquity", math.nan),
+                "OperatingCashFlow": latest.get("OperatingCashFlow", math.nan),
+                "CashConversionPct": latest.get("CashConversionPct", math.nan),
+                "Capex": latest.get("Capex", math.nan),
+                "CapexToRevenuePct": latest.get("CapexToRevenuePct", math.nan),
+            }
+            rows.append(row)
         except Exception as e:
             failures.append((t_clean, str(e)))
 
     df = pd.DataFrame(rows)
+
     if not df.empty:
-        df = df.set_index("Ticker").sort_index()
+        # Ensure all desired columns exist, even if some rows did not have them
+        desired_cols = [
+            "Name",
+            "Sector",
+            "Country",
+            "Revenue",
+            "NetIncome",
+            "NetMarginPct",
+            "Equity",
+            "ROE_Pct",
+            "Debt",
+            "DebtToEquity",
+            "OperatingCashFlow",
+            "CashConversionPct",
+            "Capex",
+            "CapexToRevenuePct",
+        ]
+        for c in desired_cols:
+            if c not in df.columns:
+                df[c] = math.nan
+
+        # Set index and enforce column order
+        df = df.set_index("Ticker")
+        df = df[desired_cols]
 
     return df, failures
+
 
 
 # -----------------------
