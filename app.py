@@ -137,6 +137,7 @@ def _fallback_macro_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 @st.cache_data
 @st.cache_data
+@st.cache_data
 def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     """
     Load CPI, unemployment and policy rate series for a country.
@@ -144,12 +145,23 @@ def load_macro_data(country: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFr
     - UK always uses the bundled CSVs.
     - Other countries try live FRED; if that fails, we fall back to UK CSV
       but clearly label that this is a fallback.
+
     Returns (cpi_df, unemployment_df, rate_df, source_label).
     """
-    # UK: always use local CSVs (this is the only guaranteed data set right now)
+
+    # UK: always use local CSVs
     if country == "United Kingdom":
         cpi, unemp, base_rate = _fallback_macro_data()
         return cpi, unemp, base_rate, "Local CSV (UK)"
+
+    # Other countries: try FRED
+    if country in MACRO_SERIES:
+        series_map = MACRO_SERIES[country]
+        try:
+            cpi = fetch_macro_series(series_map["cpi"], "CPI")
+            unemp = fetch_macro_series(series_map["unemployment"], "Unemployment")
+            base_rate = fetch_macro_series(series_map["rate"], "BaseRate")
+            return cpi, un
 
     # Other countries: try FRED
     if country in MACRO_SERIES:
