@@ -561,7 +561,9 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
         t_clean = t.upper().strip()
         if not t_clean:
             continue
+
         try:
+            # Load financials and KPIs
             fin = load_company_financials(t_clean)
             fin_kpis = add_kpis(fin)
             if fin_kpis.empty:
@@ -574,13 +576,24 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
             else:
                 latest = fin_kpis.iloc[-1]
 
-            info = fin.get("info", {}) or {}
+            # Robust info lookup for Sector / Country / Name
+            info = fin.get("info") or {}
+            if not info:
+                # Fallback: query yfinance again specifically for metadata
+                try:
+                    info = yf.Ticker(t_clean).get_info()
+                except Exception:
+                    info = {}
+
+            name = info.get("shortName") or info.get("longName") or t_clean
+            sector = info.get("sector") or info.get("industry") or ""
+            country = info.get("country") or info.get("countryISO") or ""
 
             row = {
                 "Ticker": t_clean,
-                "Name": info.get("shortName") or info.get("longName") or t_clean,
-                "Sector": info.get("sector", ""),
-                "Country": info.get("country", ""),
+                "Name": name,
+                "Sector": sector,
+                "Country": country,
                 "Revenue": latest.get("Revenue", math.nan),
                 "NetIncome": latest.get("NetIncome", math.nan),
                 "NetMarginPct": latest.get("NetMarginPct", math.nan),
@@ -594,6 +607,7 @@ def build_portfolio_table(tickers: List[str]) -> Tuple[pd.DataFrame, List[Tuple[
                 "CapexToRevenuePct": latest.get("CapexToRevenuePct", math.nan),
             }
             rows.append(row)
+
         except Exception as e:
             failures.append((t_clean, str(e)))
 
